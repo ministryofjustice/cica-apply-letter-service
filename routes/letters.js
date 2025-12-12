@@ -41,27 +41,11 @@ router.get('/:userId', permissions('letters:read'), (req, res) => {
 });
 
 /**
- * DELETE /letters/{userId}
- * Deletes all letters for a user.
- */
-router.delete('/:userId', permissions('letters:delete'), (req, res) => {
-    res.status(204).send();
-});
-
-/**
  * GET /letters/{userId}/{caseReferenceNumber}
  * Returns all letters for a specific case.
  */
 router.get('/:userId/:caseReferenceNumber', permissions('letters:read'), (req, res) => {
     res.json([]);
-});
-
-/**
- * DELETE /letters/{userId}/{caseReferenceNumber}
- * Deletes all letters for a specific case.
- */
-router.delete('/:userId/:caseReferenceNumber', permissions('letters:delete'), (req, res) => {
-    res.status(204).send();
 });
 
 /**
@@ -73,42 +57,6 @@ router.get('/:userId/:caseReferenceNumber/:letterId', permissions('letters:read'
 
     const letter = buildLetterResource(userId, caseReferenceNumber, letterId);
     res.json(letter);
-});
-
-/**
- * DELETE /letters/{userId}/{caseReferenceNumber}/{letterId}
- * Deletes a specific letter.
- */
-router.delete('/:userId/:caseReferenceNumber/:letterId', permissions('letters:delete'), (req, res) => {
-    res.status(204).send();
-});
-
-/**
- * POST /letters/{userId}/{caseReferenceNumber}/{letterId}/send
- * Sends a specific letter.
- */
-router.post('/:userId/:caseReferenceNumber/:letterId/send', permissions('letters:send'), (req, res) => {
-    const { letterId } = req.params;
-
-    res.json({
-        letterId,
-        status: 'sent'
-    });
-});
-
-/**
- * POST /letters/{userId}/{caseReferenceNumber}/{letterId}/pdf
- * Generates a PDF for a specific letter.
- */
-router.post('/:userId/:caseReferenceNumber/:letterId/pdf', permissions('letters:read'), (req, res) => {
-    const { userId, caseReferenceNumber, letterId } = req.params;
-
-    const uri = `s3://letter-bucket/${userId}/${caseReferenceNumber}/${letterId}.pdf`;
-
-    res.status(201).json({
-        letterId,
-        uri
-    });
 });
 
 module.exports = router;
