@@ -1,8 +1,19 @@
 'use strict';
 
 const express = require('express');
+const { expressjwt: validateJWT } = require('express-jwt');
+
+const permissions = require('../middleware/route-permissions');
 
 const router = express.Router();
+
+// Ensure JWT is valid for all /letters routes
+router.use(
+    validateJWT({
+        secret: process.env.CLS_JWT_SECRET,
+        algorithms: ['HS256']
+    })
+);
 
 // helper function
 function buildLetterResource(userId, caseReferenceNumber, letterId) {
@@ -25,7 +36,7 @@ function buildLetterResource(userId, caseReferenceNumber, letterId) {
  * GET /letters/{userId}
  * Returns all letters for a user.
  */
-router.get('/:userId', (req, res) => {
+router.get('/:userId', permissions('letters:read'), (req, res) => {
     res.json([]);
 });
 
@@ -33,7 +44,7 @@ router.get('/:userId', (req, res) => {
  * DELETE /letters/{userId}
  * Deletes all letters for a user.
  */
-router.delete('/:userId', (req, res) => {
+router.delete('/:userId', permissions('letters:delete'), (req, res) => {
     res.status(204).send();
 });
 
@@ -41,7 +52,7 @@ router.delete('/:userId', (req, res) => {
  * GET /letters/{userId}/{caseReferenceNumber}
  * Returns all letters for a specific case.
  */
-router.get('/:userId/:caseReferenceNumber', (req, res) => {
+router.get('/:userId/:caseReferenceNumber', permissions('letters:read'), (req, res) => {
     res.json([]);
 });
 
@@ -49,7 +60,7 @@ router.get('/:userId/:caseReferenceNumber', (req, res) => {
  * DELETE /letters/{userId}/{caseReferenceNumber}
  * Deletes all letters for a specific case.
  */
-router.delete('/:userId/:caseReferenceNumber', (req, res) => {
+router.delete('/:userId/:caseReferenceNumber', permissions('letters:delete'), (req, res) => {
     res.status(204).send();
 });
 
@@ -57,7 +68,7 @@ router.delete('/:userId/:caseReferenceNumber', (req, res) => {
  * GET /letters/{userId}/{caseReferenceNumber}/{letterId}
  * Returns a specific letter.
  */
-router.get('/:userId/:caseReferenceNumber/:letterId', (req, res) => {
+router.get('/:userId/:caseReferenceNumber/:letterId', permissions('letters:read'), (req, res) => {
     const { userId, caseReferenceNumber, letterId } = req.params;
 
     const letter = buildLetterResource(userId, caseReferenceNumber, letterId);
@@ -68,7 +79,7 @@ router.get('/:userId/:caseReferenceNumber/:letterId', (req, res) => {
  * DELETE /letters/{userId}/{caseReferenceNumber}/{letterId}
  * Deletes a specific letter.
  */
-router.delete('/:userId/:caseReferenceNumber/:letterId', (req, res) => {
+router.delete('/:userId/:caseReferenceNumber/:letterId', permissions('letters:delete'), (req, res) => {
     res.status(204).send();
 });
 
@@ -76,7 +87,7 @@ router.delete('/:userId/:caseReferenceNumber/:letterId', (req, res) => {
  * POST /letters/{userId}/{caseReferenceNumber}/{letterId}/send
  * Sends a specific letter.
  */
-router.post('/:userId/:caseReferenceNumber/:letterId/send', (req, res) => {
+router.post('/:userId/:caseReferenceNumber/:letterId/send', permissions('letters:send'), (req, res) => {
     const { letterId } = req.params;
 
     res.json({
@@ -89,7 +100,7 @@ router.post('/:userId/:caseReferenceNumber/:letterId/send', (req, res) => {
  * POST /letters/{userId}/{caseReferenceNumber}/{letterId}/pdf
  * Generates a PDF for a specific letter.
  */
-router.post('/:userId/:caseReferenceNumber/:letterId/pdf', (req, res) => {
+router.post('/:userId/:caseReferenceNumber/:letterId/pdf', permissions('letters:read'), (req, res) => {
     const { userId, caseReferenceNumber, letterId } = req.params;
 
     const uri = `s3://letter-bucket/${userId}/${caseReferenceNumber}/${letterId}.pdf`;

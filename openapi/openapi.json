@@ -14,7 +14,9 @@
     "/health": {
       "get": {
         "summary": "Health check",
-        "tags": ["System"],
+        "tags": [
+          "System"
+        ],
         "responses": {
           "200": {
             "description": "Service is healthy",
@@ -56,7 +58,9 @@
       "get": {
         "summary": "Get all letters for a user",
         "description": "Returns all letters belonging to the specified user across all cases.",
-        "tags": ["Letters"],
+        "tags": [
+          "Letters"
+        ],
         "responses": {
           "200": {
             "description": "List of letters for the user.",
@@ -73,19 +77,6 @@
           },
           "500": {
             "description": "Unexpected server error while retrieving letters."
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete all letters for a user",
-        "description": "Deletes all letters belonging to the specified user across all cases.",
-        "tags": ["Letters"],
-        "responses": {
-          "204": {
-            "description": "Delete request accepted."
-          },
-          "500": {
-            "description": "Unexpected server error while processing the delete request."
           }
         }
       }
@@ -117,7 +108,9 @@
       "get": {
         "summary": "Get all letters for a case",
         "description": "Returns all letters for a specific case belonging to a specific user.",
-        "tags": ["Letters"],
+        "tags": [
+          "Letters"
+        ],
         "responses": {
           "200": {
             "description": "List of letters for the case.",
@@ -134,19 +127,6 @@
           },
           "500": {
             "description": "Unexpected server error while retrieving letters for the case."
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete all letters for a case",
-        "description": "Deletes all letters for a specific case belonging to a specific user.",
-        "tags": ["Letters"],
-        "responses": {
-          "204": {
-            "description": "Delete request accepted."
-          },
-          "500": {
-            "description": "Unexpected server error while processing the delete request."
           }
         }
       }
@@ -189,7 +169,9 @@
       "get": {
         "summary": "Get a specific letter",
         "description": "Returns the details of a specific letter for a given user and case.",
-        "tags": ["Letters"],
+        "tags": [
+          "Letters"
+        ],
         "responses": {
           "200": {
             "description": "Details of the requested letter.",
@@ -206,196 +188,6 @@
           },
           "500": {
             "description": "Unexpected server error while retrieving the letter."
-          }
-        }
-      },
-      "delete": {
-        "summary": "Delete a specific letter",
-        "description": "Deletes a specific letter for a given user and case. If no matching letter is found, the request is still treated as successful and no content is returned.",
-        "tags": ["Letters"],
-        "responses": {
-          "204": {
-            "description": "Delete request accepted."
-          },
-          "500": {
-            "description": "Unexpected server error while processing the delete request."
-          }
-        }
-      }
-    },
-    "/letters/{userId}/{caseReferenceNumber}/{letterId}/send": {
-      "post": {
-        "summary": "Send a specific letter",
-        "description": "Sends a specific letter to a user by email or text message, depending on the specified contact preference.",
-        "tags": ["Letters"],
-        "parameters": [
-          {
-            "name": "userId",
-            "in": "path",
-            "required": true,
-            "description": "Unique identifier of the user.",
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "example": "223e4567-e89b-12d3-a456-426614174111"
-            }
-          },
-          {
-            "name": "caseReferenceNumber",
-            "in": "path",
-            "required": true,
-            "description": "Case reference number.",
-            "schema": {
-              "type": "string",
-              "example": "25-700123"
-            }
-          },
-          {
-            "name": "letterId",
-            "in": "path",
-            "required": true,
-            "description": "Unique identifier of the letter.",
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "example": "123e4567-e89b-12d3-a456-426614174000"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SendLetterRequest"
-              },
-              "example": {
-                "letterType": "AA01",
-                "letterData": {
-                  "recipientName": "Mr Test Testcase",
-                  "caseReference": "25-700123",
-                  "decisionDate": "2024-01-15"
-                },
-                "contactPreference": "E",
-                "userEmail": "user@example.com"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Send operation completed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SendLetterResponse"
-                },
-                "examples": {
-                  "sent": {
-                    "summary": "Successful send",
-                    "value": {
-                      "letterId": "123e4567-e89b-12d3-a456-426614174000",
-                      "status": "sent"
-                    }
-                  },
-                  "error": {
-                    "summary": "Error sending letter",
-                    "value": {
-                      "letterId": "123e4567-e89b-12d3-a456-426614174000",
-                      "status": "error"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request payload."
-          },
-          "500": {
-            "description": "Unexpected server error while sending the letter."
-          }
-        }
-      }
-    },
-    "/letters/{userId}/{caseReferenceNumber}/{letterId}/pdf": {
-      "post": {
-        "summary": "Generate a PDF for a specific letter",
-        "description": "Generates a PDF for the specified letter, stores it in object storage, and returns a URI for the generated PDF. The isPreview flag controls whether a PREVIEW watermark is applied.",
-        "tags": ["Letters"],
-        "parameters": [
-          {
-            "name": "userId",
-            "in": "path",
-            "required": true,
-            "description": "Unique identifier of the user.",
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "example": "223e4567-e89b-12d3-a456-426614174111"
-            }
-          },
-          {
-            "name": "caseReferenceNumber",
-            "in": "path",
-            "required": true,
-            "description": "Case reference number.",
-            "schema": {
-              "type": "string",
-              "example": "25-700123"
-            }
-          },
-          {
-            "name": "letterId",
-            "in": "path",
-            "required": true,
-            "description": "Unique identifier of the letter.",
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "example": "123e4567-e89b-12d3-a456-426614174000"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GenerateLetterRequest"
-              },
-              "example": {
-                "letterType": "AA01",
-                "letterData": {
-                  "recipientName": "Mr Test Testcase",
-                  "caseReference": "25-700123",
-                  "decisionDate": "2026-01-15"
-                },
-                "isPreview": true
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "PDF generated and stored successfully.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GenerateLetterResponse"
-                },
-                "example": {
-                  "letterId": "123e4567-e89b-12d3-a456-426614174000",
-                  "uri": "s3://letter-bucket/user123/case123/letter123.pdf"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request payload."
-          },
-          "500": {
-            "description": "Error generating or storing the PDF."
           }
         }
       }
@@ -418,7 +210,10 @@
       },
       "LetterBase": {
         "type": "object",
-        "required": ["letterType", "letterData"],
+        "required": [
+          "letterType",
+          "letterData"
+        ],
         "properties": {
           "letterType": {
             "type": "string",
@@ -471,102 +266,13 @@
             "example": "s3://letter-bucket/user123/case123/letter123.pdf"
           }
         },
-        "required": ["userId", "caseReferenceNumber", "letterId", "letterType", "letterData", "jsonUri"]
-      },
-      "GenerateLetterRequest": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/LetterBase"
-          },
-          {
-            "type": "object",
-            "required": ["isPreview"],
-            "properties": {
-              "isPreview": {
-                "type": "boolean",
-                "description": "Whether to generate the letter as a preview (with a PREVIEW watermark) or as a final version.",
-                "example": true
-              }
-            }
-          }
-        ],
-        "description": "Request payload for generating a letter PDF."
-      },
-      "GenerateLetterResponse": {
-        "type": "object",
-        "description": "Response returned after generating and storing a PDF for a letter.",
-        "properties": {
-          "letterId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "Identifier of the letter for which the PDF was generated.",
-            "example": "123e4567-e89b-12d3-a456-426614174000"
-          },
-          "uri": {
-            "type": "string",
-            "description": "URI pointing to the generated PDF in object storage (e.g. S3).",
-            "example": "s3://letter-bucket/user123/case123/letter123.pdf"
-          }
-        },
-        "required": ["letterId", "uri"]
-      },
-      "SendLetterRequest": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/LetterBase"
-          },
-          {
-            "type": "object",
-            "required": ["contactPreference"],
-            "properties": {
-              "contactPreference": {
-                "type": "string",
-                "description": "Preferred contact method: 'T' for text message, 'E' for email.",
-                "enum": ["T", "E"],
-                "example": "E"
-              },
-              "userEmail": {
-                "type": "string",
-                "format": "email",
-                "nullable": true,
-                "description": "Email address to send the letter to, required if contactPreference is 'E'.",
-                "example": "user@example.com"
-              },
-              "userPhone": {
-                "type": "string",
-                "nullable": true,
-                "description": "Phone number to send the letter to by text, required if contactPreference is 'T'.",
-                "example": "+447700900123"
-              }
-            }
-          }
-        ],
-        "description": "Request payload for sending a letter to a user."
-      },
-      "SendLetterResponse": {
-        "type": "object",
-        "description": "Result of attempting to send a letter.",
-        "properties": {
-          "letterId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "Identifier of the letter that was sent or attempted.",
-            "example": "123e4567-e89b-12d3-a456-426614174000"
-          },
-          "status": {
-            "type": "string",
-            "description": "Outcome of the send operation.",
-            "enum": ["sent", "error"],
-            "example": "sent"
-          },
-          "errorMessage": {
-            "type": "string",
-            "nullable": true,
-            "description": "Error details if the send operation failed. Null or omitted when status is 'sent'.",
-            "example": "SMTP connection failed"
-          }
-        },
-        "required": ["letterId", "status"]
+        "required": [
+          "userId",
+          "caseReferenceNumber",
+          "letterId",
+          "letterType",
+          "letterData"
+        ]
       }
     }
   }

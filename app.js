@@ -5,12 +5,17 @@ const cors = require('cors');
 const morgan = require('morgan');
 const swaggerUi = require('swagger-ui-express');
 const OpenApiValidator = require('express-openapi-validator');
+const errorHandler = require('./middleware/error-handler');
+const logger = require('./middleware/logger');
 
 const healthRouter = require('./routes/health');
 const lettersRouter = require('./routes/letters');
 const openapiDocument = require('./openapi/openapi.json');
 
 const app = express();
+
+// logging
+app.use(logger());
 
 app.use(cors());
 app.use(express.json());
@@ -41,16 +46,6 @@ app.use((req, res) => {
 });
 
 // Error handler
-app.use((err, req, res, next) => {
-    if (err && err.status && err.errors) {
-        return res.status(err.status).json({
-            message: err.message,
-            errors: err.errors
-        });
-    }
-
-    console.error(err);
-    res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
-});
+app.use(errorHandler);
 
 module.exports = app;

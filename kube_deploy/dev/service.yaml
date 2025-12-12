@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cica-letter-service
+  labels:
+    app: cica-letter-service
+spec:
+  selector:
+    app: cica-letter-service
+  ports:
+    - name: http
+      port: 3300
+      targetPort: 3300
