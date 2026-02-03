@@ -44,7 +44,7 @@ jobs:
           key: v1-npm-{{ checksum "package.json" }}-{{checksum "package-lock.json" }}
       - run:
           name: Run tests and code coverage
-          command: npx --no-install jest --ci --runInBand --bail --silent --coverage --projects jest.config.js
+          command: npx --no-install jest --ci --runInBand --bail --silent --coverage
   lint:
     docker:
       - image: node:22.8.0-bookworm-slim

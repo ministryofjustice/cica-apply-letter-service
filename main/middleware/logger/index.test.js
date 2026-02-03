@@ -1,5 +1,3 @@
-/* eslint-disable global-require, no-shadow */
-
 'use strict';
 
 const pino = require('pino-http');

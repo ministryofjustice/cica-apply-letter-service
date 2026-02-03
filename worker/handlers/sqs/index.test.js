@@ -7,7 +7,6 @@ const {
     DeleteMessageCommand,
     SQSClient
 } = require('@aws-sdk/client-sqs');
-const fs = require('fs');
 const createSQSService = require('.');
 
 describe('SQS Service', () => {

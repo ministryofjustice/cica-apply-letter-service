@@ -1,5 +1,7 @@
 'use strict';
 
+const logger = require('../logger');
+
 module.exports = (message) => {
     logger.info(
         {
