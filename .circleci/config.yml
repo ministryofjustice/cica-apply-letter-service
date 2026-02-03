@@ -20,7 +20,7 @@ jobs:
       - checkout
       - run:
           name: npm audit
-          command: npm audit --production --audit-level=moderate
+          command: npm audit --production --omit=dev
       - persist_to_workspace:
           root: ./
           paths:
