@@ -1,6 +1,6 @@
 const app = require('./app');
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3300;
 
 // Don’t start the server when running tests
 if (process.env.NODE_ENV !== 'test') {

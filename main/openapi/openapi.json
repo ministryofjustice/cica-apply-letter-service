@@ -7,7 +7,12 @@
   },
   "servers": [
     {
-      "url": "http://localhost:3000"
+      "url": "http://localhost:3300"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
     }
   ],
   "paths": {
@@ -17,6 +22,7 @@
         "tags": [
           "System"
         ],
+        "security": [],
         "responses": {
           "200": {
             "description": "Service is healthy",
@@ -37,7 +43,8 @@
                 }
               }
             }
-          }
+          },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
         }
       }
     },
@@ -75,9 +82,10 @@
               }
             }
           },
-          "500": {
-            "description": "Unexpected server error while retrieving letters."
-          }
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
         }
       }
     },
@@ -125,9 +133,10 @@
               }
             }
           },
-          "500": {
-            "description": "Unexpected server error while retrieving letters for the case."
-          }
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
         }
       }
     },
@@ -164,11 +173,26 @@
             "format": "uuid",
             "example": "123e4567-e89b-12d3-a456-426614174000"
           }
+        },
+        {
+          "name": "format",
+          "in": "query",
+          "required": false,
+          "description": "Response format",
+          "schema": {
+            "type": "string",
+            "enum": [
+              "json",
+              "template",
+              "pdf"
+            ],
+            "default": "json"
+          }
         }
       ],
       "get": {
         "summary": "Get a specific letter",
-        "description": "Returns the details of a specific letter for a given user and case.",
+        "description": "Returns the details of a specific letter for a given user and case. Available as raw json, an interpolated template or a PDF stream.",
         "tags": [
           "Letters"
         ],
@@ -178,22 +202,37 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LetterResource"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/LetterResource" },
+                    { "$ref": "#/components/schemas/TemplateResource" }
+                  ]
+                }
+              },
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
           },
-          "404": {
-            "description": "Letter not found."
-          },
-          "500": {
-            "description": "Unexpected server error while retrieving the letter."
-          }
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
         }
       }
     }
   },
   "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
     "schemas": {
       "LetterData": {
         "type": "object",
@@ -206,23 +245,6 @@
           "recipientName": "Mr Test Testcase",
           "caseReference": "25-700123",
           "decisionDate": "2024-01-15"
-        }
-      },
-      "LetterBase": {
-        "type": "object",
-        "required": [
-          "letterType",
-          "letterData"
-        ],
-        "properties": {
-          "letterType": {
-            "type": "string",
-            "description": "Code that identifies which letter template to use.",
-            "example": "AA01"
-          },
-          "letterData": {
-            "$ref": "#/components/schemas/LetterData"
-          }
         }
       },
       "LetterResource": {
@@ -253,17 +275,6 @@
           },
           "letterData": {
             "$ref": "#/components/schemas/LetterData"
-          },
-          "jsonUri": {
-            "type": "string",
-            "description": "URI of the JSON representation of the letter in object storage.",
-            "example": "s3://letter-bucket/user123/case123/letter123.json"
-          },
-          "pdfUri": {
-            "type": "string",
-            "nullable": true,
-            "description": "URI of the generated PDF for this letter in object storage, if available.",
-            "example": "s3://letter-bucket/user123/case123/letter123.pdf"
           }
         },
         "required": [
@@ -273,6 +284,94 @@
           "letterType",
           "letterData"
         ]
+      },
+      "TemplateResource": {
+        "description": "Represents a stored letter, its associated metadata and the interpolated template instance",
+        "allOf": [
+          { "$ref": "#/components/schemas/LetterResource" },
+          {
+            "type": "object",
+            "properties": {
+              "templateInstance": {
+                "type": "object",
+                "description": "Interpolated/derived values produced by applying the template.",
+                "additionalProperties": true
+              }
+            },
+            "required": ["templateInstance"]
+          }
+        ]
+      },
+      "ErrorObject": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "integer", "example": 401 },
+          "title": { "type": "string", "example": "401 Unauthorized" },
+          "detail": { "type": "string", "example": "No authorization token was found" }
+        },
+        "required": ["status", "title", "detail"],
+        "additionalProperties": false
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ErrorObject" }
+          }
+        },
+        "required": ["errors"],
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "There is an issue with the request",
+        "content": {
+          "application/vnd.api+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Access token is missing or invalid",
+        "content": {
+          "application/vnd.api+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The JWT doesn't permit access to this endpoint",
+        "content": {
+          "application/vnd.api+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The specified resource was not found",
+        "content": {
+          "application/vnd.api+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Unexpected server error.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
       }
     }
   }

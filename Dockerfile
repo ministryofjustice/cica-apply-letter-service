@@ -1,59 +1,32 @@
-FROM node:22.8.0-bookworm-slim AS base
-WORKDIR /app
-ENV NODE_ENV=production
+# syntax=docker/dockerfile:1.6
 
-# Install tini for better signal handling
-RUN apt-get update && apt-get install -y --no-install-recommends tini \
-    && rm -rf /var/lib/apt/lists/*
+FROM node:22.8.0-bookworm-slim AS deps
+WORKDIR /usr/src/app
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
-
-############################
-# Development image
-############################
-FROM base AS dev
-ENV NODE_ENV=development
-
-# Install all dependencies (including dev)
-COPY package*.json ./
-RUN npm install
-
-# Copy source
-COPY . .
-
-EXPOSE 3000
-CMD ["npm", "run", "dev"]
-
-############################
-# Test image
-############################
-FROM dev AS test
-ENV NODE_ENV=test CI=true
-# Run Jest tests (fail build if tests fail)
-RUN npm test
-
-############################
-# Production image
-############################
-FROM base AS prod
-WORKDIR /app
-ENV NODE_ENV=production
-
-# Copy package files and install only prod dependencies
+# Install production dependencies only
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-# Copy built app code (from dev stage)
-COPY --from=dev /app ./
 
-# Drop privileges
-RUN useradd --create-home --shell /bin/bash appuser && chown -R appuser /app
-USER appuser
+FROM node:22.8.0-bookworm-slim AS runtime
+WORKDIR /usr/src/app
 
-EXPOSE 3000
+ENV NODE_ENV=production
 
-# Simple healthcheck for /health
-HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health',r=>{if(r.statusCode!==200)process.exit(1)}).on('error',()=>process.exit(1))"
+# Create non-root user
+RUN groupadd -g 1014 dc_user \
+  && useradd -m -u 1015 -g 1014 -s /usr/sbin/nologin dc_user
 
-CMD ["node", "server.js"]
+# Copy node_modules from deps stage
+COPY --from=deps /usr/src/app/node_modules ./node_modules
+
+# Copy app source
+COPY . .
+
+RUN chown -R 1015:1014 /usr/src/app
+
+USER 1015
+
+EXPOSE 3300
+
+# No CMD: Kubernetes supplies the command for API vs Worker

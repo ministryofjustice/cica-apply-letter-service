@@ -1,0 +1,1 @@
+process.env.CLS_JWT_SECRET = process.env.CLS_JWT_SECRET || "test-secret";

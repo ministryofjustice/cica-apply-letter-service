@@ -9,7 +9,7 @@ const createLogger = require('./index');
 // Mock pino-http
 jest.mock('pino-http');
 
-describe('logger', () => {
+describe('httpLogger', () => {
     describe('Logger Middleware', () => {
         let mockPinoHttp;
         let originalEnv;
@@ -58,8 +58,8 @@ describe('logger', () => {
                 expect(config.level).toBe('debug');
             });
 
-            it('should use DCS_LOG_LEVEL environment variable when set', () => {
-                process.env.DCS_LOG_LEVEL = 'silent';
+            it('should use CLS_LOG_LEVEL environment variable when set', () => {
+                process.env.CLS_LOG_LEVEL = 'silent';
 
                 createLogger();
 
@@ -121,10 +121,13 @@ describe('logger', () => {
 
         describe('transport configuration', () => {
             it('should have correct transport configuration based on NODE_ENV at module load', () => {
+                process.env.NODE_ENV = 'development';
+
                 createLogger();
 
                 const config = pino.mock.calls[0][0];
                 expect(config.transport).toBeDefined();
+                expect(config.transport.target).toBe('pino-pretty');
             });
         });
 
@@ -205,6 +208,7 @@ describe('logger', () => {
         let app;
 
         beforeEach(() => {
+            process.env.NODE_ENV = "test";
             // Unmock pino-http for integration tests
             jest.unmock('pino-http');
 

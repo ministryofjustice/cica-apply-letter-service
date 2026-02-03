@@ -26,9 +26,7 @@ function buildLetterResource(userId, caseReferenceNumber, letterId) {
             recipientName: 'Mr Test Testcase',
             caseReference: caseReferenceNumber,
             decisionDate: '2026-01-15'
-        },
-        jsonUri: `s3://letter-bucket/${userId}/${caseReferenceNumber}/${letterId}.json`,
-        pdfUri: `s3://letter-bucket/${userId}/${caseReferenceNumber}/${letterId}.pdf`
+        }
     };
 }
 
@@ -37,7 +35,12 @@ function buildLetterResource(userId, caseReferenceNumber, letterId) {
  * Returns all letters for a user.
  */
 router.get('/:userId', permissions('letters:read'), (req, res) => {
-    res.json([]);
+    const { userId } = req.params;
+    res.json([
+        buildLetterResource(userId, "26-700000", "some-letter-id"),
+        buildLetterResource(userId, "26-700000", "another-letter-id"),
+        buildLetterResource(userId, "26-800000", "fatal-letter-id")
+    ]);
 });
 
 /**
@@ -45,7 +48,11 @@ router.get('/:userId', permissions('letters:read'), (req, res) => {
  * Returns all letters for a specific case.
  */
 router.get('/:userId/:caseReferenceNumber', permissions('letters:read'), (req, res) => {
-    res.json([]);
+    const { userId, caseReferenceNumber } = req.params;
+    res.json([
+        buildLetterResource(userId, caseReferenceNumber, "some-letter-id"),
+        buildLetterResource(userId, caseReferenceNumber, "another-letter-id")
+    ]);
 });
 
 /**

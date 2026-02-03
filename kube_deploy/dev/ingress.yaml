@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: 213.107.167.128/32
+    external-dns.alpha.kubernetes.io/set-identifier: cls-ingress-dev-claim-criminal-injuries-compensation-dev-green
+    external-dns.alpha.kubernetes.io/aws-weight: '100'
+  name: cls-ingress-dev
+  namespace: claim-criminal-injuries-compensation-dev
+spec:
+  tls:
+    - hosts:
+        - cica-letter-service.dev.claim-criminal-injuries-compensation.apps.live.cloud-platform.service.justice.gov.uk
+    - hosts:
+        - cica-letter-service.dev.claim-criminal-injuries-compensation.service.justice.gov.uk
+      secretName: data-capture-service-cert-secret-dev
+  ingressClassName: default
+  rules:
+    - host: cica-letter-service.dev.claim-criminal-injuries-compensation.apps.live.cloud-platform.service.justice.gov.uk
+      http:
+        paths:
+          - path: /docs
+            backend:
+              service:
+                name: letter-app-dev
+                port:
+                  number: 80
+            pathType: ImplementationSpecific
+    - host: cica-letter-service.dev.claim-criminal-injuries-compensation.service.justice.gov.uk
+      http:
+        paths:
+          - path: /docs
+            backend:
+              service:
+                name: letter-app-dev
+                port:
+                  number: 80
+            pathType: ImplementationSpecific

@@ -29,7 +29,7 @@ app.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiDocument, { explorer: t
 
 app.use(
     OpenApiValidator.middleware({
-        apiSpec: './openapi/openapi.json',
+        apiSpec: './main/openapi/openapi.json',
         validateRequests: true,
         validateResponses: false,
         validateSecurity: false

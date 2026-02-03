@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: letter-app-dev
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: letter-app-dev
+  template:
+    metadata:
+      labels:
+        app: letter-app-dev
+    spec:
+      containers:
+        - name: letter-app
+          image: 754256621582.dkr.ecr.eu-west-2.amazonaws.com/cica/cica-repo-dev:latest
+          imagePullPolicy: Always
+          command: ["node", "main/server.js"]
+          ports:
+            - containerPort: 3300
+          env:
+            - name: CLS_LOG_LEVEL
+              value: info
+            - name: NODE_ENV
+              value: dev
+            - name: CLS_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: letter-service-secrets
+                  key: cls_jwt_secret
+            - name: SQS_QUEUE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cica-letter-sqs
+                  key: sqs_id

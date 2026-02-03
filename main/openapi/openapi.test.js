@@ -5,7 +5,7 @@ const app = require('../app');
 const jestOpenAPI = require('jest-openapi').default;
 
 beforeAll(() => {
-    const openapiDocument = require('../openapi/openapi.json');
+    const openapiDocument = require('./openapi.json');
     jestOpenAPI(openapiDocument);
 });
 
