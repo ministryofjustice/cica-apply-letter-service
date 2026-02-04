@@ -120,20 +120,22 @@ jobs:
             echo -n ${K8S_CLUSTER_CERT} | base64 -d > ./live_ca.crt
             kubectl config set-cluster ${K8S_CLUSTER_NAME} --certificate-authority=./live_ca.crt --server=https://${K8S_CLUSTER_NAME}
             kubectl config set-credentials circleci --token=${K8S_TOKEN_DEV}
-            kubectl config set-context ${K8S_CLUSTER_NAME} --cluster=${K8S_CLUSTER_NAME} --user=circleci --namespace=claim-criminal-injuries-compensation-dev
+            kubectl config set-context ${K8S_CLUSTER_NAME} --cluster=${K8S_CLUSTER_NAME} --user=circleci --namespace=${K8S_CLUSTER_NAMESPACE}
             kubectl config use-context ${K8S_CLUSTER_NAME}
             kubectl config current-context
-            kubectl --namespace=claim-criminal-injuries-compensation-dev get pods
+            kubectl --namespace=${K8S_CLUSTER_NAMESPACE} get pods
       - deploy:
           name: Deploy to the cluster
           command: |
             echo "deploy before aws ecr"
-            kubectl set image -f kube_deploy/Dev/deploy-main.yml letter-app-dev=${ECR_REGISTRY}/${ECR_REPOSITORY}:${CIRCLE_SHA1} --local -o yaml \
-            kubectl set image -f kube_deploy/Dev/deploy-worker.yml letter-worker-dev=${ECR_REGISTRY}/${ECR_REPOSITORY}:${CIRCLE_SHA1} --local -o yaml \
-            | kubectl apply -f -
+            kubectl set image -f kube_deploy/dev/deploy-main.yaml \
+              letter-app-dev=${ECR_REGISTRY}/${ECR_REPOSITORY}:${CIRCLE_SHA1} \
+              --local -o yaml | kubectl apply -f -
+            kubectl set image -f kube_deploy/dev/deploy-worker.yaml \
+              letter-worker-dev=${ECR_REGISTRY}/${ECR_REPOSITORY}:${CIRCLE_SHA1} \
+              --local -o yaml | kubectl apply -f -
             kubectl apply \
-                -f kube_deploy/Dev/service.yml \
-                -f kube_deploy/Dev/ingress.yml
+              -f kube_deploy/dev/service.yaml 
 
 workflows:
   version: 2

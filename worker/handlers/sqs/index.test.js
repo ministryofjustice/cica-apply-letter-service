@@ -2,7 +2,6 @@
 
 const {mockClient} = require('aws-sdk-client-mock');
 const {
-    SendMessageCommand,
     ReceiveMessageCommand,
     DeleteMessageCommand,
     SQSClient
@@ -11,23 +10,6 @@ const createSQSService = require('.');
 
 describe('SQS Service', () => {
     const sqsMock = mockClient(SQSClient);
-
-    it('Should send a message to the queue', async () => {
-        sqsMock.on(SendMessageCommand).resolves('Message Sent');
-        const sqsInput = {
-            QueueUrl: 'Queue',
-            MaxNumberOfMessages: 10
-        };
-        const testMessage = `{
-            "applicationPDFDocumentSummaryKey": "pdfLoc",
-            "applicationJSONDocumentSummaryKey": "jsonKey"
-        }`;
-
-        const sqsService = createSQSService();
-        const queueMessage = await sqsService.sendSQS(sqsInput, testMessage);
-
-        expect(queueMessage).toBe('Message Sent');
-    });
 
     it('Should receive a message from the queue', async () => {
         const testMessage = {

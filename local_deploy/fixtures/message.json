@@ -1,0 +1,5 @@
+{
+  "type": "SEND",
+  "key": "letters/test-user/99-123456/test-letter.json",
+  "requestedAt": "2026-01-01T00:00:00.000Z"
+}

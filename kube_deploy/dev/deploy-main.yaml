@@ -13,7 +13,7 @@ spec:
         app: letter-app-dev
     spec:
       containers:
-        - name: letter-app
+        - name: letter-app-dev
           image: 754256621582.dkr.ecr.eu-west-2.amazonaws.com/cica/cica-repo-dev:latest
           imagePullPolicy: Always
           command: ["node", "main/server.js"]
@@ -23,7 +23,7 @@ spec:
             - name: CLS_LOG_LEVEL
               value: info
             - name: NODE_ENV
-              value: dev
+              value: production
             - name: CLS_JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -34,3 +34,15 @@ spec:
                 secretKeyRef:
                   name: cica-letter-sqs
                   key: sqs_id
+            - name: CLS_LETTER_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: cica-letter-bucket
+                  key: bucket_name
+            - name: CLS_DCS_JWT
+              valueFrom:
+                secretKeyRef:
+                  name: data-capture-service-secrets
+                  key: dcs_admin_jwt
+            - name: CLS_DCS_URL
+              value: http://dcs-service-dev
