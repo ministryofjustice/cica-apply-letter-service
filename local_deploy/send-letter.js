@@ -18,7 +18,7 @@ const sqs = new SQSClient({
 
 async function main() {
     const queueName = 'letter-queue';
-    const messagePath = path.join(__dirname, '..', 'fixtures', 'message.json');
+    const messagePath = path.join(__dirname, 'fixtures', 'message.json');
 
     const rawMessage = await fs.readFile(messagePath, 'utf8');
 

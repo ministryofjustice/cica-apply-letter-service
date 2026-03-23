@@ -34,9 +34,9 @@ const sqs = new SQSClient({
 async function main() {
     const bucket = 'letter-bucket';
     const queueName = 'letter-queue';
-    const key = 'letters/test-user/99-123456/test-letter.json';
+    const key = 'letters/urn:fdc:gov.uk:2022:ZoTyx0owL1MYS-UkCwtQXbF2A-padOhdssGvXDfamws/99-123456/test-letter.json';
 
-    const letterPath = path.join(__dirname, '..', 'fixtures', 'letter.json');
+    const letterPath = path.join(__dirname, 'fixtures', 'letter.json');
     const letterBody = await fs.readFile(letterPath, 'utf8');
 
     await s3.send(new CreateBucketCommand({
