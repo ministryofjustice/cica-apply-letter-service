@@ -95,8 +95,7 @@ module.exports = async (message) => {
         const letterDocument = await s3Client.getLetterDocument(process.env.CLS_LETTER_BUCKET, key);
         // transform data
         const transformer = createTransformer();
-        const { template, letterData } = letterDocument;
-        const transformedLetterTemplate = await transformer.getTransformedTemplate({ template, ...letterData });
+        const transformedLetterTemplate = await transformer.getTransformedTemplate(letterDocument);
         // Call DCS
         const dcsClient = createDcsClient();
         await dcsClient.sendLetter(transformedLetterTemplate, letterDocument);

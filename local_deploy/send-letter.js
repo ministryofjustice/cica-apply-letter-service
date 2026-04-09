@@ -9,7 +9,7 @@ const {
 
 const sqs = new SQSClient({
     region: 'eu-west-2',
-    endpoint: 'http://localstack:4566',
+    endpoint: 'http://localhost:4566',
     credentials: {
         accessKeyId: 'test',
         secretAccessKey: 'test',

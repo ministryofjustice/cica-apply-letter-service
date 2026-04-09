@@ -4,7 +4,7 @@ const crypto = require('crypto');
 
 function dcsClient() {
     async function sendLetter(template, templateData) {
-        const response = await fetch(`${process.env.CLS_DCS_URL}/api/questionnaires`, {
+        const response = await fetch(`${process.env.CLS_DCS_URL}/api/questionnaires/letters`, {
             method: 'POST',
             headers: {
                 accept: 'application/vnd.api+json',
@@ -32,7 +32,7 @@ function dcsClient() {
                             'letter-id': templateData.letterId,
                             'letter-type': templateData.letterType,
                             'case-reference': templateData.caseReferenceNumber,
-                            'expiry-date': templateData.requestReviewBy,
+                            'expiry-date': templateData.expiresAt,
                             'external-id': `urn:uuid:${crypto.randomUUID()}`
                         }
                     }
