@@ -23,7 +23,9 @@ function dcsClient() {
                             'is-authenticated': true,
                             'contact-preference': templateData.contactPreference,
                             'email': templateData.userEmail,
-                            'phone': templateData.userPhone
+                            'phone': templateData.userPhone,
+                            'first-name': templateData.letterData.applicantForename,
+                            'last-name': templateData.letterData.applicantSurname,
                         },
                         origin: {
                             channel: 'dashboard'
