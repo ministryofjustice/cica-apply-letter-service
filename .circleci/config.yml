@@ -135,7 +135,35 @@ jobs:
               letter-worker-dev=${ECR_REGISTRY}/${ECR_REPOSITORY}:${CIRCLE_SHA1} \
               --local -o yaml | kubectl apply -f -
             kubectl apply \
-              -f kube_deploy/dev/service.yaml 
+              -f kube_deploy/dev/service.yaml
+  deploy_to_uat:
+    executor: docker-publisher
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Authenticate with cluster
+          command: |
+            echo -n ${K8S_CLUSTER_CERT} | base64 -d > ./live_ca.crt
+            kubectl config set-cluster ${K8S_CLUSTER_NAME} --certificate-authority=./live_ca.crt --server=https://${K8S_CLUSTER_NAME}
+            kubectl config set-credentials circleci --token=${K8S_TOKEN_UAT}
+            kubectl config set-context ${K8S_CLUSTER_NAME} --cluster=${K8S_CLUSTER_NAME} --user=circleci --namespace=${K8S_CLUSTER_NAMESPACE}
+            kubectl config use-context ${K8S_CLUSTER_NAME}
+            kubectl config current-context
+            kubectl --namespace=${K8S_CLUSTER_NAMESPACE} get pods
+      - deploy:
+          name: Deploy to the cluster
+          command: |
+            echo "deploy before aws ecr"
+            kubectl set image -f kube_deploy/uat/deploy-main.yaml \
+              letter-app-uat=${ECR_REGISTRY}/${ECR_REPOSITORY}:${CIRCLE_SHA1} \
+              --local -o yaml | kubectl apply -f -
+            kubectl set image -f kube_deploy/uat/deploy-worker.yaml \
+              letter-worker-uat=${ECR_REGISTRY}/${ECR_REPOSITORY}:${CIRCLE_SHA1} \
+              --local -o yaml | kubectl apply -f -
+            kubectl apply \
+              -f kube_deploy/uat/service.yaml
 
 workflows:
   version: 2
@@ -162,6 +190,7 @@ workflows:
             branches:
               only:
                 - cls-deploy
+                - cls-deploy-to-uat
       - deploy_to_dev_approval:
           type: approval
           requires:
@@ -175,3 +204,16 @@ workflows:
           filters:
             branches:
               only: cls-deploy
+      - deploy_to_uat_approval:
+          type: approval
+          requires:
+            - push_image
+          filters:
+            branches:
+              only: cls-deploy-to-uat
+      - deploy_to_uat:
+          requires:
+            - deploy_to_uat_approval
+          filters:
+            branches:
+              only: cls-deploy-to-uat

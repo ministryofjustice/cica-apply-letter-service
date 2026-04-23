@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: letter-app-uat
+  labels:
+    app: letter-app-uat
+spec:
+  selector:
+    app: letter-app-uat
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3300

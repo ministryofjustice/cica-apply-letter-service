@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: letter-worker-uat
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: letter-worker-uat
+  template:
+    metadata:
+      labels:
+        app: letter-worker-uat
+    spec:
+      serviceAccountName: irsacls
+      containers:
+        - name: letter-worker-uat
+          image: 754256621582.dkr.ecr.eu-west-2.amazonaws.com/cica/cica-repo-uat:latest
+          imagePullPolicy: Always
+          command: ["node", "worker/index.js"]
+          env:
+            - name: CLS_LOG_LEVEL
+              value: info
+            - name: NODE_ENV
+              value: production
+            - name: CLS_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: letter-service-secrets
+                  key: cls_jwt_secret
+            - name: SQS_QUEUE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cica-letter-sqs
+                  key: sqs_id
+            - name: CLS_LETTER_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: cica-letter-bucket
+                  key: bucket_name
+            - name: CLS_DCS_JWT
+              valueFrom:
+                secretKeyRef:
+                  name: data-capture-service-secrets
+                  key: dcs_admin_jwt
+            - name: CLS_DCS_URL
+              value: http://dcs-service-uat
