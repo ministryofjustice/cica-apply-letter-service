@@ -41,7 +41,7 @@ spec:
             - name: CLS_DCS_JWT
               valueFrom:
                 secretKeyRef:
-                  name: data-capture-service-secrets
-                  key: dcs_admin_jwt
+                  name: letter-service-secrets
+                  key: cls_dcs_jwt
             - name: CLS_DCS_URL
               value: http://dcs-service-uat
