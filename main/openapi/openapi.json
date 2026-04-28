@@ -251,12 +251,7 @@
         "type": "object",
         "description": "Represents a stored letter and its associated metadata.",
         "properties": {
-          "userId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "Unique identifier of the user who owns the letter.",
-            "example": "223e4567-e89b-12d3-a456-426614174111"
-          },
+          "userId": { "$ref": "#/components/schemas/UserId" },
           "caseReferenceNumber": {
             "type": "string",
             "description": "Reference number of the case to which the letter belongs.",
@@ -264,7 +259,6 @@
           },
           "letterId": {
             "type": "string",
-            "format": "uuid",
             "description": "Unique identifier of the letter.",
             "example": "123e4567-e89b-12d3-a456-426614174000"
           },
@@ -301,6 +295,14 @@
             "required": ["templateInstance"]
           }
         ]
+      },
+      "UserId": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "User Id",
+        "type": "string",
+        "format": "uri",
+        "maxLength": 64,
+        "pattern": "^urn:(uuid|fdc:gov.uk:2022):"
       },
       "ErrorObject": {
         "type": "object",
@@ -368,8 +370,10 @@
       "InternalServerError": {
         "description": "Unexpected server error.",
         "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          "application/vnd.api+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
           }
         }
       }
