@@ -22,9 +22,8 @@ function createS3Service() {
         `letters/${userId}/${caseReferenceNumber}/${letterId}.json`;
 
     async function getLetterDocument(bucket, { userId, caseReferenceNumber, letterId }) {
+        const key = letterKey({ userId, caseReferenceNumber, letterId });
         try {
-            const key = letterKey({ userId, caseReferenceNumber, letterId });
-
             const resp = await s3.send(
                 new GetObjectCommand({
                     Bucket: bucket,

@@ -1,8 +1,7 @@
 'use strict';
 
-const { Readable } = require('stream');
-const createS3Service = require('../s3');
-const createTransformer = require('../transformer');
+const createS3Service = require('./s3');
+const createTransformer = require('./transformer');
 
 function buildLetterResource(userId, caseReferenceNumber, letterId) {
     return {
@@ -14,19 +13,6 @@ function buildLetterResource(userId, caseReferenceNumber, letterId) {
             recipientName: 'Mr Test Testcase',
             caseReference: caseReferenceNumber,
             decisionDate: '2026-01-15'
-        }
-    };
-}
-
-function buildTemplateResource(letter) {
-    return {
-        ...letter,
-        templateInstance: {
-            type: letter.letterType,
-            recipientName: letter.letterData.recipientName,
-            caseReference: letter.letterData.caseReference,
-            decisionDate: letter.letterData.decisionDate,
-            content: `Dear ${letter.letterData.recipientName}, your case reference is ${letter.letterData.caseReference}.`
         }
     };
 }
@@ -86,18 +72,29 @@ async function getLetter(req, res) {
     }
 
     const transformer = createTransformer();
-    const transformedLetter = await transformer.getTransformedLetter(letterJson, {format});
 
-    if (format === 'pdf') {
-        res.set({
-            'Content-Type': 'application/pdf',
-            'Content-Disposition': `inline; filename="${letterId}.pdf"`
-        });
-
-        return transformedLetter.pipe(res);
+    if (format === 'template') {
+        const transformedLetter = await transformer.getTransformedLetter(letterJson, {format});
+        return res.json(transformedLetter);
     }
 
-    return res.json(transformedLetter);
+    const decisionLetterSchema = letterJson.template?.sections?.[letterJson.template?.routes?.initial]?.schema;
+
+    const pdfData = {
+        letterId,
+        template: decisionLetterSchema,
+        isPreview: false,
+        letterJson
+    };
+
+    const transformedLetterPdf = await transformer.getTransformedLetter(pdfData, {format});
+    res.set({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `inline; filename="${letterId}.pdf"`
+    });
+
+    return transformedLetterPdf.pipe(res);
+
 }
 
 module.exports = {
