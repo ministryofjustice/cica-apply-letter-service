@@ -10,7 +10,7 @@ beforeAll(() => {
 });
 
 describe('Letter Service API contract', () => {
-    const userId = '223e4567-e89b-12d3-a456-426614174111';
+    const userId = 'urn:fdc:gov.uk:2022:223e4567-e89b-12d3-a456-426614174111';
     const caseRef = '25-700123';
     const letterId = '123e4567-e89b-12d3-a456-426614174000';
 
