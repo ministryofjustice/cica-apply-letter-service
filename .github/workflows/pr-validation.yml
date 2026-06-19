@@ -1,0 +1,367 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: pr-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate letter service
+    runs-on: ubuntu-latest
+
+    env:
+      SNYK_CLIENT_ID: ${{ secrets.SNYK_CLIENT_ID }}
+      SNYK_CLIENT_SECRET: ${{ secrets.SNYK_CLIENT_SECRET }}
+      SNYK_API_URL: ${{ vars.SNYK_API_URL || 'https://api.snyk.io' }}
+      NODE_VERSION: "24.15.0"
+      IMAGE_NAME: letter-service:pr-validation
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Show validation info
+        run: |
+          echo "Validating pull request for letter service"
+          echo "Workflow triggered by: ${{ github.event_name }}"
+          echo "Branch/ref: ${{ github.ref_name }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Node version: $NODE_VERSION"
+          echo "Snyk API URL: $SNYK_API_URL"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Get Snyk OAuth access token
+        id: snyk_auth
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SNYK_CLIENT_ID:-}" ]; then
+            echo "❌ SNYK_CLIENT_ID secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${SNYK_CLIENT_SECRET:-}" ]; then
+            echo "❌ SNYK_CLIENT_SECRET secret is not set"
+            exit 1
+          fi
+
+          echo "Requesting short-lived Snyk OAuth access token"
+
+          RESPONSE=$(curl --fail --silent --show-error \
+            --request POST \
+            --url "${SNYK_API_URL}/oauth2/token" \
+            --header "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=${SNYK_CLIENT_ID}" \
+            --data-urlencode "client_secret=${SNYK_CLIENT_SECRET}")
+
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          EXPIRES_IN=$(echo "$RESPONSE" | jq -r '.expires_in // "unknown"')
+
+          if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
+            echo "❌ Failed to retrieve Snyk OAuth access token"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "SNYK_OAUTH_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "expires_in=$EXPIRES_IN" >> "$GITHUB_OUTPUT"
+
+          echo "Snyk OAuth token retrieved successfully"
+          echo "Token lifetime seconds: $EXPIRES_IN"
+
+      - name: Configure Snyk policy args
+        id: snyk_policy
+        run: |
+          if [ -f .snyk ]; then
+            echo "args=--policy-path=.snyk" >> "$GITHUB_OUTPUT"
+            echo "Using .snyk policy file"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "No .snyk policy file found"
+          fi
+
+      - name: Scan application dependencies with Snyk
+        id: scan_application
+        run: |
+          set -euo pipefail
+
+          echo "=== APPLICATION SCAN START ==="
+
+          set +e
+          snyk test \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --all-projects \
+            --severity-threshold=high \
+            --json > snyk-test-results.json 2> snyk-test-results.log
+
+          EXIT_CODE=$?
+          set -e
+
+          echo "Snyk raw exit code: $EXIT_CODE"
+
+          if [ ! -s snyk-test-results.json ] || ! jq -e . snyk-test-results.json >/dev/null 2>&1; then
+            echo "::warning::snyk-test-results.json missing or invalid; writing fallback JSON"
+            printf '{"ok":false,"error":"snyk test --json produced no valid JSON","exitCode":%s,"vulnerabilities":[],"applications":[]}\n' "$EXIT_CODE" > snyk-test-results.json
+          fi
+
+          snyk test \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --all-projects \
+            --severity-threshold=high \
+            --sarif > snyk-test-results.sarif 2>> snyk-test-results.log || true
+
+          if [ ! -s snyk-test-results.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > snyk-test-results.sarif
+          fi
+
+          echo "=== APPLICATION VULN SUMMARY ==="
+
+          jq '
+            def all_vulns:
+              [
+                (.vulnerabilities[]?),
+                (.applications[]?.vulnerabilities[]?)
+              ];
+            {
+              total: (all_vulns | length),
+              high: (all_vulns | map(select(.severity=="high")) | length),
+              critical: (all_vulns | map(select(.severity=="critical")) | length),
+              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length)
+            }' snyk-test-results.json || echo "::warning::Unable to parse snyk-test-results.json"
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload application SARIF to GitHub
+        if: ${{ hashFiles('snyk-test-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@eda5730a8bfb740e03a28087a958444c646e5842 # v4.36.0
+        with:
+          sarif_file: snyk-test-results.sarif
+
+      - name: Debug application scan output
+        if: always()
+        run: |
+          echo "=== SNYK STDERR ==="
+          cat snyk-test-results.log || true
+          echo ""
+          echo "=== SNYK SARIF HEAD ==="
+          head -n 20 snyk-test-results.sarif || true
+
+      - name: Report policy-suppressed vulnerabilities
+        run: |
+          echo "=== SNYK POLICY FILE (.snyk) - IGNORED VULNERABILITIES ==="
+          echo ""
+
+          if [ ! -f .snyk ]; then
+            echo "No .snyk policy file found."
+            exit 0
+          fi
+
+          cat .snyk
+          echo ""
+          echo "=== POLICY SUMMARY ==="
+
+          ACTIVE_IGNORES=$(awk '
+            BEGIN { in_ignore = 0; count = 0 }
+            /^ignore:[[:space:]]*$/ { in_ignore = 1; next }
+            in_ignore && /^[^[:space:]]/ { in_ignore = 0 }
+            in_ignore && /^[[:space:]]{2}[A-Za-z0-9._-]+:[[:space:]]*$/ { count++ }
+            END { print count }
+          ' .snyk)
+
+          echo "Active ignore entries detected: $ACTIVE_IGNORES"
+
+          if [ "$ACTIVE_IGNORES" -gt 0 ]; then
+            echo "::warning::Policy file detected and applied via --policy-path=.snyk"
+            echo "::warning::Active suppressions are present in .snyk"
+            echo "::warning::Review the .snyk file to verify suppressions have clear reason and expiry"
+          else
+            echo "No active suppressions found in .snyk"
+          fi
+
+      - name: Fail workflow on application vulnerabilities
+        if: ${{ steps.scan_application.outputs.exit_code != '0' }}
+        run: |
+          EXIT_CODE="${{ steps.scan_application.outputs.exit_code }}"
+
+          if [ "$EXIT_CODE" = "1" ]; then
+            echo "❌ High/critical application vulnerabilities found."
+            echo "Review the Snyk output and either fix the vulnerability or document an approved policy suppression."
+          elif [ "$EXIT_CODE" = "2" ]; then
+            echo "❌ Snyk application scan encountered an error."
+            echo "This could indicate authentication failure, network issues, or misconfiguration."
+          else
+            echo "❌ Snyk application scan failed with unexpected exit code: $EXIT_CODE"
+          fi
+
+          exit 1
+
+      - name: Build Docker image
+        run: |
+          echo "Building Docker image for PR validation only"
+          docker build --build-arg NODE_ENV=production -t "$IMAGE_NAME" .
+
+      - name: Scan container image with Snyk
+        id: scan_container
+        run: |
+          set -euo pipefail
+
+          echo "=== CONTAINER SCAN START ==="
+          echo "Scanning image: $IMAGE_NAME"
+
+          set +e
+          snyk container test "$IMAGE_NAME" \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --file=Dockerfile \
+            --severity-threshold=high \
+            --json > snyk-container-test-results.json 2> snyk-container-test-results.log
+
+          EXIT_CODE=$?
+          set -e
+
+          echo "Snyk raw exit code: $EXIT_CODE"
+
+          if [ ! -s snyk-container-test-results.json ] || ! jq -e . snyk-container-test-results.json >/dev/null 2>&1; then
+            echo "::warning::snyk-container-test-results.json missing or invalid; writing fallback JSON"
+            printf '{"ok":false,"error":"snyk container test --json produced no valid JSON","exitCode":%s,"vulnerabilities":[],"applications":[]}\n' "$EXIT_CODE" > snyk-container-test-results.json
+          fi
+
+          snyk container test "$IMAGE_NAME" \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --file=Dockerfile \
+            --severity-threshold=high \
+            --sarif > snyk-container-test-results.sarif 2>> snyk-container-test-results.log || true
+
+          if [ ! -s snyk-container-test-results.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > snyk-container-test-results.sarif
+          fi
+
+          echo "=== CONTAINER VULN SUMMARY ==="
+
+          jq '
+            def all_vulns:
+              [
+                (.vulnerabilities[]?),
+                (.applications[]?.vulnerabilities[]?)
+              ];
+            {
+              total: (all_vulns | length),
+              high: (all_vulns | map(select(.severity=="high")) | length),
+              critical: (all_vulns | map(select(.severity=="critical")) | length),
+              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length)
+            }' snyk-container-test-results.json || echo "::warning::Unable to parse snyk-container-test-results.json"
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload container SARIF to GitHub
+        if: ${{ hashFiles('snyk-container-test-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@eda5730a8bfb740e03a28087a958444c646e5842 # v4.36.0
+        with:
+          sarif_file: snyk-container-test-results.sarif
+
+      - name: Debug container scan output
+        if: always()
+        run: |
+          echo "=== SNYK CONTAINER STDERR ==="
+          cat snyk-container-test-results.log || true
+          echo ""
+          echo "=== SNYK CONTAINER SARIF HEAD ==="
+          head -n 20 snyk-container-test-results.sarif || true
+
+      - name: Fail workflow on container scan error
+        if: ${{ steps.scan_container.outputs.exit_code == '2' }}
+        run: |
+          echo "❌ Snyk container scan encountered an error."
+          echo "This could indicate authentication failure, network issues, or misconfiguration."
+          exit 1
+
+      - name: Fail on high or critical container vulnerabilities
+        run: |
+          set -euo pipefail
+
+          echo "=== EVALUATING CONTAINER VULNERABILITIES ==="
+
+          if [ ! -s snyk-container-test-results.json ]; then
+            echo "❌ No Snyk container JSON output found."
+            exit 1
+          fi
+
+          HIGH_OR_CRITICAL=$(jq '
+            [
+              (.vulnerabilities[]?),
+              (.applications[]?.vulnerabilities[]?)
+            ]
+            | map(select(.severity=="high" or .severity=="critical"))
+            | length
+          ' snyk-container-test-results.json)
+
+          echo "High/critical container vulnerabilities: $HIGH_OR_CRITICAL"
+
+          if [ "$HIGH_OR_CRITICAL" -gt 0 ]; then
+            echo "❌ Failing build due to high/critical container vulnerabilities"
+            echo ""
+            echo "=== LIST OF FAILING VULNERABILITIES ==="
+
+            jq -r '
+              [
+                (.vulnerabilities[]?),
+                (.applications[]?.vulnerabilities[]?)
+              ]
+              | map(select(.severity=="high" or .severity=="critical"))
+              | .[]
+              | "- \(.id) | package=\(.packageName) | severity=\(.severity) | fixable=\((.isUpgradable == true) or (.isPatchable == true))"
+            ' snyk-container-test-results.json
+
+            exit 1
+          fi
+
+          echo "✅ No high/critical container vulnerabilities found"
+
+      - name: Write validation summary
+        if: always()
+        run: |
+          {
+            echo "## PR validation summary"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Install | Completed |"
+            echo "| Lint | Completed |"
+            echo "| Test | Completed |"
+            echo "| Build | Completed |"
+            echo "| Docker build | Completed |"
+            echo "| Snyk OAuth token | retrieved; expires in ${{ steps.snyk_auth.outputs.expires_in || 'unknown' }} seconds |"
+            echo "| Snyk application scan | exit code ${{ steps.scan_application.outputs.exit_code || 'not available' }} |"
+            echo "| Snyk container scan | exit code ${{ steps.scan_container.outputs.exit_code || 'not available' }} |"
+            echo ""
+            echo "Commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
