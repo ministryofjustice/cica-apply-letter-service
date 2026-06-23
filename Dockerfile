@@ -13,9 +13,11 @@ WORKDIR /usr/src/app
 
 ENV NODE_ENV=production
 
-# Create non-root user
+# Create non-root user && remove npm from the runtime package
 RUN groupadd -g 1014 dc_user \
-  && useradd -m -u 1015 -g 1014 -s /usr/sbin/nologin dc_user
+  && useradd -m -u 1015 -g 1014 -s /usr/sbin/nologin dc_user \
+  && rm -rf /usr/local/lib/node_modules/npm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
 # Copy node_modules from deps stage
 COPY --from=deps /usr/src/app/node_modules ./node_modules
