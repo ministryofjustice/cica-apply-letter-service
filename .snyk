@@ -1,0 +1,9 @@
+version: v1.25.0
+ignore:
+  SNYK-DEBIAN12-ZLIB-6008963:
+    - '*':
+        reason: >-
+          Temporary exception for zlib CVE in Debian 12 base image.
+          Snyk reports no fixed Debian 12 version. Review upon expiry.
+        expires: '2026-07-23T00:00:00.000Z'
+        created: '2026-06-23T00:00:00.000Z'
