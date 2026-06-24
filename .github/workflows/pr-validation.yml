@@ -23,7 +23,7 @@ jobs:
       SNYK_CLIENT_ID: ${{ secrets.SNYK_CLIENT_ID }}
       SNYK_CLIENT_SECRET: ${{ secrets.SNYK_CLIENT_SECRET }}
       SNYK_API_URL: ${{ vars.SNYK_API_URL || 'https://api.snyk.io' }}
-      NODE_VERSION: "24.15.0"
+      NODE_VERSION: "24.16.0"
       IMAGE_NAME: letter-service:pr-validation
 
     steps:
@@ -44,6 +44,7 @@ jobs:
           echo "Commit SHA: ${{ github.sha }}"
           echo "Node version: $NODE_VERSION"
           echo "Snyk API URL: $SNYK_API_URL"
+          echo "Image name: $IMAGE_NAME"
 
       - name: Install dependencies
         run: npm ci
@@ -94,6 +95,7 @@ jobs:
 
           echo "::add-mask::$ACCESS_TOKEN"
           echo "SNYK_OAUTH_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "SNYK_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
           echo "expires_in=$EXPIRES_IN" >> "$GITHUB_OUTPUT"
 
           echo "Snyk OAuth token retrieved successfully"
@@ -304,7 +306,8 @@ jobs:
           echo "This could indicate authentication failure, network issues, or misconfiguration."
           exit 1
 
-      - name: Fail on high or critical container vulnerabilities
+      - name: Evaluate container vulnerability gate
+        id: container_gate
         run: |
           set -euo pipefail
 
@@ -315,7 +318,7 @@ jobs:
             exit 1
           fi
 
-          HIGH_OR_CRITICAL=$(jq '
+          RAW_HIGH_OR_CRITICAL=$(jq '
             [
               (.vulnerabilities[]?),
               (.applications[]?.vulnerabilities[]?)
@@ -324,12 +327,26 @@ jobs:
             | length
           ' snyk-container-test-results.json)
 
-          echo "High/critical container vulnerabilities: $HIGH_OR_CRITICAL"
+          UNIQUE_HIGH_OR_CRITICAL=$(jq '
+            [
+              (.vulnerabilities[]?),
+              (.applications[]?.vulnerabilities[]?)
+            ]
+            | map(select(.severity=="high" or .severity=="critical"))
+            | unique_by(.id)
+            | length
+          ' snyk-container-test-results.json)
 
-          if [ "$HIGH_OR_CRITICAL" -gt 0 ]; then
-            echo "❌ Failing build due to high/critical container vulnerabilities"
+          echo "Raw high/critical container vulnerability entries: $RAW_HIGH_OR_CRITICAL"
+          echo "Unique high/critical container vulnerabilities after Snyk policy: $UNIQUE_HIGH_OR_CRITICAL"
+
+          echo "raw_high_or_critical=$RAW_HIGH_OR_CRITICAL" >> "$GITHUB_OUTPUT"
+          echo "unique_high_or_critical=$UNIQUE_HIGH_OR_CRITICAL" >> "$GITHUB_OUTPUT"
+
+          if [ "$UNIQUE_HIGH_OR_CRITICAL" -gt 0 ]; then
+            echo "❌ Failing build due to remaining high/critical container vulnerabilities"
             echo ""
-            echo "=== LIST OF FAILING VULNERABILITIES ==="
+            echo "=== LIST OF FAILING UNIQUE VULNERABILITIES ==="
 
             jq -r '
               [
@@ -337,6 +354,7 @@ jobs:
                 (.applications[]?.vulnerabilities[]?)
               ]
               | map(select(.severity=="high" or .severity=="critical"))
+              | unique_by(.id)
               | .[]
               | "- \(.id) | package=\(.packageName) | severity=\(.severity) | fixable=\((.isUpgradable == true) or (.isPatchable == true))"
             ' snyk-container-test-results.json
@@ -344,7 +362,53 @@ jobs:
             exit 1
           fi
 
-          echo "✅ No high/critical container vulnerabilities found"
+          echo "✅ No blocking high/critical container vulnerabilities found after Snyk policy"
+
+      - name: Generate container SBOM
+        run: |
+          set -euo pipefail
+
+          echo "=== GENERATING CONTAINER SBOM ==="
+
+          snyk container sbom "$IMAGE_NAME" \
+            --format=cyclonedx1.6+json \
+            > sbom.cyclonedx.json
+
+          if [ ! -s sbom.cyclonedx.json ] || ! jq -e . sbom.cyclonedx.json >/dev/null 2>&1; then
+            echo "❌ SBOM generation failed or produced invalid JSON"
+            exit 1
+          fi
+
+          echo "✅ SBOM generated: sbom.cyclonedx.json"
+
+      - name: Capture Docker image identity
+        run: |
+          set -euo pipefail
+
+          echo "=== CAPTURING IMAGE IDENTITY ==="
+
+          docker image inspect "$IMAGE_NAME" --format='{{.Id}}' > image-id.txt
+          docker image inspect "$IMAGE_NAME" --format='{{json .RepoTags}}' > image-tags.json
+
+          echo "Image ID:"
+          cat image-id.txt
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-validation-evidence
+          path: |
+            snyk-test-results.json
+            snyk-test-results.log
+            snyk-test-results.sarif
+            snyk-container-test-results.json
+            snyk-container-test-results.log
+            snyk-container-test-results.sarif
+            sbom.cyclonedx.json
+            image-id.txt
+            image-tags.json
+          if-no-files-found: warn
 
       - name: Write validation summary
         if: always()
@@ -357,11 +421,32 @@ jobs:
             echo "| Install | Completed |"
             echo "| Lint | Completed |"
             echo "| Test | Completed |"
-            echo "| Build | Completed |"
             echo "| Docker build | Completed |"
             echo "| Snyk OAuth token | retrieved; expires in ${{ steps.snyk_auth.outputs.expires_in || 'unknown' }} seconds |"
             echo "| Snyk application scan | exit code ${{ steps.scan_application.outputs.exit_code || 'not available' }} |"
             echo "| Snyk container scan | exit code ${{ steps.scan_container.outputs.exit_code || 'not available' }} |"
+            echo "| Raw high/critical container entries | ${{ steps.container_gate.outputs.raw_high_or_critical || 'not available' }} |"
+            echo "| Unique blocking container findings | ${{ steps.container_gate.outputs.unique_high_or_critical || 'not available' }} |"
+            echo "| Container SBOM | $([ -s sbom.cyclonedx.json ] && echo 'Generated' || echo 'Not available') |"
+            echo "| Validation evidence artifact | pr-validation-evidence |"
             echo ""
-            echo "Commit: \`${{ github.sha }}\`"
+            echo "### Build identity"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Image name | \`${IMAGE_NAME}\` |"
+
+            if [ -s image-id.txt ]; then
+              echo "| Local image ID | \`$(cat image-id.txt)\` |"
+            else
+              echo "| Local image ID | Not available |"
+            fi
+
+            echo ""
+            echo "### Notes"
+            echo ""
+            echo "- This workflow validates the PR image locally."
+            echo "- The release workflow should later push to a registry and capture the registry digest."
+            echo "- The SBOM and Snyk scan outputs are uploaded as workflow evidence artifacts."
           } >> "$GITHUB_STEP_SUMMARY"

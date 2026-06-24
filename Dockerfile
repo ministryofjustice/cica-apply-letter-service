@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 
-FROM node:22-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS deps
+FROM node:24-bookworm-slim@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532 AS deps
 WORKDIR /usr/src/app
 
 COPY package.json package-lock.json ./
@@ -8,7 +8,7 @@ RUN npm ci --omit=dev --ignore-scripts \
   && npm cache clean --force
 
 
-FROM node:22-bookworm-slim@sha256:d9f850096136edbc402debdd8729579a288aac64574ada0ff4db26b6ae58b0b2 AS runtime
+FROM node:24-bookworm-slim@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532 AS runtime
 WORKDIR /usr/src/app
 
 ENV NODE_ENV=production
