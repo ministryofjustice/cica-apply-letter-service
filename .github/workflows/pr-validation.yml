@@ -27,7 +27,7 @@ jobs:
       NODE_VERSION: "24.16.0"
       IMAGE_NAME: letter-service:pr-validation
       DOCKERFILE_PATH: Dockerfile
-      DOCKER_CONTEXT: .
+      DOCKER_BUILD_CONTEXT: .
       SNYK_SEVERITY_THRESHOLD: high
       RUN_SAST: "true"
 
@@ -51,7 +51,7 @@ jobs:
           echo "Snyk API URL: $SNYK_API_URL"
           echo "Image name: $IMAGE_NAME"
           echo "Dockerfile path: $DOCKERFILE_PATH"
-          echo "Docker context: $DOCKER_CONTEXT"
+          echo "Docker context: $DOCKER_BUILD_CONTEXT"
           echo "Snyk severity threshold: $SNYK_SEVERITY_THRESHOLD"
           echo "Run SAST: $RUN_SAST"
 
@@ -418,7 +418,7 @@ jobs:
             --build-arg NODE_ENV=production \
             -f "$DOCKERFILE_PATH" \
             -t "$IMAGE_NAME" \
-            "$DOCKER_CONTEXT"
+            "$DOCKER_BUILD_CONTEXT"
 
       - name: Scan container image with Snyk
         id: scan_container
@@ -632,7 +632,7 @@ jobs:
             echo "| Commit | \`${{ github.sha }}\` |"
             echo "| Image name | \`${IMAGE_NAME}\` |"
             echo "| Dockerfile | \`${DOCKERFILE_PATH}\` |"
-            echo "| Docker context | \`${DOCKER_CONTEXT}\` |"
+            echo "| Docker context | \`${DOCKER_BUILD_CONTEXT}\` |"
 
             if [ -s image-id.txt ]; then
               echo "| Local image ID | \`$(cat image-id.txt)\` |"
