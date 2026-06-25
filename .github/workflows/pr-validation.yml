@@ -23,8 +23,13 @@ jobs:
       SNYK_CLIENT_ID: ${{ secrets.SNYK_CLIENT_ID }}
       SNYK_CLIENT_SECRET: ${{ secrets.SNYK_CLIENT_SECRET }}
       SNYK_API_URL: ${{ vars.SNYK_API_URL || 'https://api.snyk.io' }}
+
       NODE_VERSION: "24.16.0"
       IMAGE_NAME: letter-service:pr-validation
+      DOCKERFILE_PATH: Dockerfile
+      DOCKER_CONTEXT: .
+      SNYK_SEVERITY_THRESHOLD: high
+      RUN_SAST: "true"
 
     steps:
       - name: Checkout code
@@ -45,6 +50,55 @@ jobs:
           echo "Node version: $NODE_VERSION"
           echo "Snyk API URL: $SNYK_API_URL"
           echo "Image name: $IMAGE_NAME"
+          echo "Dockerfile path: $DOCKERFILE_PATH"
+          echo "Docker context: $DOCKER_CONTEXT"
+          echo "Snyk severity threshold: $SNYK_SEVERITY_THRESHOLD"
+          echo "Run SAST: $RUN_SAST"
+
+      - name: Warn on unpinned GitHub Actions
+        run: |
+          set -euo pipefail
+
+          echo "=== CHECKING GITHUB ACTION PINNING ==="
+
+          python <<'PY'
+          from pathlib import Path
+          import re
+
+          workflow_dir = Path(".github/workflows")
+          if not workflow_dir.exists():
+              print("No .github/workflows directory found")
+              raise SystemExit(0)
+
+          action_pattern = re.compile(r"uses:\s*([^\s#]+@([^\s#]+))")
+          sha_pattern = re.compile(r"^[a-f0-9]{40}$")
+
+          warnings = 0
+
+          for path in sorted(workflow_dir.glob("*.y*ml")):
+              for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                  match = action_pattern.search(line)
+                  if not match:
+                      continue
+
+                  action_ref = match.group(1)
+                  ref = match.group(2)
+
+                  # Local reusable actions/workflows can be pinned by repository ref later.
+                  # For now, warn rather than fail so this can be adopted gradually.
+                  if not sha_pattern.fullmatch(ref):
+                      warnings += 1
+                      print(
+                          f"::warning file={path},line={line_number}::"
+                          f"GitHub Action is not pinned to a full commit SHA: {action_ref}"
+                      )
+
+          if warnings == 0:
+              print("✅ All GitHub Actions appear to be pinned to full commit SHAs")
+          else:
+              print(f"::warning::{warnings} unpinned GitHub Action reference(s) found")
+              print("This is currently a warning. Consider making this a hard gate once shared workflow adoption is stable.")
+          PY
 
       - name: Install dependencies
         run: npm ci
@@ -112,18 +166,53 @@ jobs:
             echo "No .snyk policy file found"
           fi
 
+      - name: Validate Snyk policy suppressions
+        run: |
+          set -euo pipefail
+
+          echo "=== VALIDATING SNYK POLICY FILE ==="
+
+          if [ ! -f .snyk ]; then
+            echo "No .snyk policy file found."
+            exit 0
+          fi
+
+          cat .snyk
+          echo ""
+
+          if grep -qE '^[[:space:]]{2}[A-Za-z0-9._-]+:[[:space:]]*$' .snyk; then
+            echo "Snyk ignore entries detected."
+
+            if ! grep -q 'reason:' .snyk; then
+              echo "❌ .snyk contains ignore entries but no reason field."
+              echo "Each suppression should explain why the risk is accepted."
+              exit 1
+            fi
+
+            if ! grep -q 'expires:' .snyk; then
+              echo "❌ .snyk contains ignore entries but no expires field."
+              echo "Each suppression should have an expiry date."
+              exit 1
+            fi
+
+            echo "✅ .snyk contains reason and expires fields."
+            echo "::warning::.snyk suppressions are present. Review that they are specific, justified, and time-limited."
+          else
+            echo "No active ignore entries detected in .snyk."
+          fi
+
       - name: Scan application dependencies with Snyk
         id: scan_application
         run: |
           set -euo pipefail
 
-          echo "=== APPLICATION SCAN START ==="
+          echo "=== SCA / APPLICATION DEPENDENCY SCAN START ==="
 
           set +e
           snyk test \
             ${{ steps.snyk_policy.outputs.args }} \
             --all-projects \
-            --severity-threshold=high \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
             --json > snyk-test-results.json 2> snyk-test-results.log
 
           EXIT_CODE=$?
@@ -139,7 +228,7 @@ jobs:
           snyk test \
             ${{ steps.snyk_policy.outputs.args }} \
             --all-projects \
-            --severity-threshold=high \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
             --sarif > snyk-test-results.sarif 2>> snyk-test-results.log || true
 
           if [ ! -s snyk-test-results.sarif ]; then
@@ -158,7 +247,8 @@ jobs:
               total: (all_vulns | length),
               high: (all_vulns | map(select(.severity=="high")) | length),
               critical: (all_vulns | map(select(.severity=="critical")) | length),
-              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length)
+              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length),
+              uniqueHighOrCritical: (all_vulns | map(select(.severity=="high" or .severity=="critical")) | unique_by(.id) | length)
             }' snyk-test-results.json || echo "::warning::Unable to parse snyk-test-results.json"
 
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -172,43 +262,11 @@ jobs:
       - name: Debug application scan output
         if: always()
         run: |
-          echo "=== SNYK STDERR ==="
+          echo "=== SNYK APPLICATION STDERR ==="
           cat snyk-test-results.log || true
           echo ""
-          echo "=== SNYK SARIF HEAD ==="
+          echo "=== SNYK APPLICATION SARIF HEAD ==="
           head -n 20 snyk-test-results.sarif || true
-
-      - name: Report policy-suppressed vulnerabilities
-        run: |
-          echo "=== SNYK POLICY FILE (.snyk) - IGNORED VULNERABILITIES ==="
-          echo ""
-
-          if [ ! -f .snyk ]; then
-            echo "No .snyk policy file found."
-            exit 0
-          fi
-
-          cat .snyk
-          echo ""
-          echo "=== POLICY SUMMARY ==="
-
-          ACTIVE_IGNORES=$(awk '
-            BEGIN { in_ignore = 0; count = 0 }
-            /^ignore:[[:space:]]*$/ { in_ignore = 1; next }
-            in_ignore && /^[^[:space:]]/ { in_ignore = 0 }
-            in_ignore && /^[[:space:]]{2}[A-Za-z0-9._-]+:[[:space:]]*$/ { count++ }
-            END { print count }
-          ' .snyk)
-
-          echo "Active ignore entries detected: $ACTIVE_IGNORES"
-
-          if [ "$ACTIVE_IGNORES" -gt 0 ]; then
-            echo "::warning::Policy file detected and applied via --policy-path=.snyk"
-            echo "::warning::Active suppressions are present in .snyk"
-            echo "::warning::Review the .snyk file to verify suppressions have clear reason and expiry"
-          else
-            echo "No active suppressions found in .snyk"
-          fi
 
       - name: Fail workflow on application vulnerabilities
         if: ${{ steps.scan_application.outputs.exit_code != '0' }}
@@ -216,7 +274,7 @@ jobs:
           EXIT_CODE="${{ steps.scan_application.outputs.exit_code }}"
 
           if [ "$EXIT_CODE" = "1" ]; then
-            echo "❌ High/critical application vulnerabilities found."
+            echo "❌ High/critical application dependency vulnerabilities found."
             echo "Review the Snyk output and either fix the vulnerability or document an approved policy suppression."
           elif [ "$EXIT_CODE" = "2" ]; then
             echo "❌ Snyk application scan encountered an error."
@@ -227,10 +285,140 @@ jobs:
 
           exit 1
 
+      - name: Generate application SBOM
+        run: |
+          set -euo pipefail
+
+          echo "=== GENERATING APPLICATION SBOM ==="
+
+          snyk sbom \
+            --format=cyclonedx1.6+json \
+            > app-sbom.cyclonedx.json
+
+          if [ ! -s app-sbom.cyclonedx.json ] || ! jq -e . app-sbom.cyclonedx.json >/dev/null 2>&1; then
+            echo "❌ Application SBOM generation failed or produced invalid JSON"
+            exit 1
+          fi
+
+          echo "✅ Application SBOM generated: app-sbom.cyclonedx.json"
+
+      - name: Scan source code with Snyk Code
+        id: scan_code
+        if: ${{ env.RUN_SAST == 'true' }}
+        run: |
+          set -euo pipefail
+
+          echo "=== SAST / SNYK CODE SCAN START ==="
+
+          set +e
+          snyk code test \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --json > snyk-code-test-results.json 2> snyk-code-test-results.log
+
+          EXIT_CODE=$?
+          set -e
+
+          echo "Snyk Code raw exit code: $EXIT_CODE"
+
+          if [ ! -s snyk-code-test-results.json ] || ! jq -e . snyk-code-test-results.json >/dev/null 2>&1; then
+            echo "::warning::snyk-code-test-results.json missing or invalid; writing fallback JSON"
+            printf '{"ok":false,"error":"snyk code test --json produced no valid JSON","exitCode":%s,"runs":[]}\n' "$EXIT_CODE" > snyk-code-test-results.json
+          fi
+
+          snyk code test \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --sarif > snyk-code-test-results.sarif 2>> snyk-code-test-results.log || true
+
+          if [ ! -s snyk-code-test-results.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > snyk-code-test-results.sarif
+          fi
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SAST SARIF to GitHub
+        if: ${{ env.RUN_SAST == 'true' && hashFiles('snyk-code-test-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@eda5730a8bfb740e03a28087a958444c646e5842 # v4.36.0
+        with:
+          sarif_file: snyk-code-test-results.sarif
+
+      - name: Debug SAST scan output
+        if: always()
+        run: |
+          echo "=== SNYK CODE STDERR ==="
+          cat snyk-code-test-results.log || true
+          echo ""
+          echo "=== SNYK CODE SARIF HEAD ==="
+          head -n 20 snyk-code-test-results.sarif || true
+
+      - name: Fail workflow on SAST findings
+        if: ${{ env.RUN_SAST == 'true' && steps.scan_code.outputs.exit_code != '0' }}
+        run: |
+          EXIT_CODE="${{ steps.scan_code.outputs.exit_code }}"
+
+          if [ "$EXIT_CODE" = "1" ]; then
+            echo "❌ High/critical SAST findings found."
+            echo "Review the Snyk Code output and either fix the issue or document an approved suppression."
+          elif [ "$EXIT_CODE" = "2" ]; then
+            echo "❌ Snyk Code scan encountered an error."
+            echo "This could indicate authentication failure, network issues, unsupported configuration, or Snyk Code availability."
+          else
+            echo "❌ Snyk Code scan failed with unexpected exit code: $EXIT_CODE"
+          fi
+
+          exit 1
+
+      - name: Validate Dockerfile policy
+        run: |
+          set -euo pipefail
+
+          echo "=== VALIDATING DOCKERFILE POLICY ==="
+
+          if [ ! -f "$DOCKERFILE_PATH" ]; then
+            echo "❌ Dockerfile not found at path: $DOCKERFILE_PATH"
+            exit 1
+          fi
+
+          if grep -Ei '^[[:space:]]*FROM[[:space:]]+[^#]*:latest([[:space:]]|$)' "$DOCKERFILE_PATH"; then
+            echo "❌ Dockerfile must not use :latest base images"
+            exit 1
+          fi
+
+          if ! grep -Eq '^[[:space:]]*USER[[:space:]]+[^[:space:]]+' "$DOCKERFILE_PATH"; then
+            echo "❌ Dockerfile must set a non-root USER in the runtime stage"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*COPY[[:space:]]+\.[[:space:]]+\.' "$DOCKERFILE_PATH"; then
+            echo "❌ Dockerfile must not use broad 'COPY . .'"
+            echo "Use explicit COPY statements and .dockerignore allow-listing instead."
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*FROM[[:space:]]+node:.*-slim' "$DOCKERFILE_PATH"; then
+            if ! grep -q 'rm -rf /usr/local/lib/node_modules/npm' "$DOCKERFILE_PATH"; then
+              echo "❌ Node runtime images should remove npm from the final runtime stage"
+              exit 1
+            fi
+          fi
+
+          if ! grep -Eq '^[[:space:]]*FROM[[:space:]]+[^[:space:]]+@sha256:' "$DOCKERFILE_PATH"; then
+            echo "::warning::Dockerfile base images are not pinned by digest. This should become mandatory once repos are ready."
+          else
+            echo "✅ Dockerfile uses digest-pinned base image references"
+          fi
+
+          echo "✅ Dockerfile policy checks passed"
+
       - name: Build Docker image
         run: |
+          set -euo pipefail
+
           echo "Building Docker image for PR validation only"
-          docker build --build-arg NODE_ENV=production -t "$IMAGE_NAME" .
+          docker build \
+            --build-arg NODE_ENV=production \
+            -f "$DOCKERFILE_PATH" \
+            -t "$IMAGE_NAME" \
+            "$DOCKER_CONTEXT"
 
       - name: Scan container image with Snyk
         id: scan_container
@@ -243,8 +431,8 @@ jobs:
           set +e
           snyk container test "$IMAGE_NAME" \
             ${{ steps.snyk_policy.outputs.args }} \
-            --file=Dockerfile \
-            --severity-threshold=high \
+            --file="$DOCKERFILE_PATH" \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
             --json > snyk-container-test-results.json 2> snyk-container-test-results.log
 
           EXIT_CODE=$?
@@ -259,8 +447,8 @@ jobs:
 
           snyk container test "$IMAGE_NAME" \
             ${{ steps.snyk_policy.outputs.args }} \
-            --file=Dockerfile \
-            --severity-threshold=high \
+            --file="$DOCKERFILE_PATH" \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
             --sarif > snyk-container-test-results.sarif 2>> snyk-container-test-results.log || true
 
           if [ ! -s snyk-container-test-results.sarif ]; then
@@ -279,7 +467,8 @@ jobs:
               total: (all_vulns | length),
               high: (all_vulns | map(select(.severity=="high")) | length),
               critical: (all_vulns | map(select(.severity=="critical")) | length),
-              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length)
+              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length),
+              uniqueHighOrCritical: (all_vulns | map(select(.severity=="high" or .severity=="critical")) | unique_by(.id) | length)
             }' snyk-container-test-results.json || echo "::warning::Unable to parse snyk-container-test-results.json"
 
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -372,14 +561,14 @@ jobs:
 
           snyk container sbom "$IMAGE_NAME" \
             --format=cyclonedx1.6+json \
-            > sbom.cyclonedx.json
+            > container-sbom.cyclonedx.json
 
-          if [ ! -s sbom.cyclonedx.json ] || ! jq -e . sbom.cyclonedx.json >/dev/null 2>&1; then
-            echo "❌ SBOM generation failed or produced invalid JSON"
+          if [ ! -s container-sbom.cyclonedx.json ] || ! jq -e . container-sbom.cyclonedx.json >/dev/null 2>&1; then
+            echo "❌ Container SBOM generation failed or produced invalid JSON"
             exit 1
           fi
 
-          echo "✅ SBOM generated: sbom.cyclonedx.json"
+          echo "✅ Container SBOM generated: container-sbom.cyclonedx.json"
 
       - name: Capture Docker image identity
         run: |
@@ -402,10 +591,14 @@ jobs:
             snyk-test-results.json
             snyk-test-results.log
             snyk-test-results.sarif
+            snyk-code-test-results.json
+            snyk-code-test-results.log
+            snyk-code-test-results.sarif
             snyk-container-test-results.json
             snyk-container-test-results.log
             snyk-container-test-results.sarif
-            sbom.cyclonedx.json
+            app-sbom.cyclonedx.json
+            container-sbom.cyclonedx.json
             image-id.txt
             image-tags.json
           if-no-files-found: warn
@@ -423,11 +616,13 @@ jobs:
             echo "| Test | Completed |"
             echo "| Docker build | Completed |"
             echo "| Snyk OAuth token | retrieved; expires in ${{ steps.snyk_auth.outputs.expires_in || 'unknown' }} seconds |"
-            echo "| Snyk application scan | exit code ${{ steps.scan_application.outputs.exit_code || 'not available' }} |"
+            echo "| SCA / Snyk application scan | exit code ${{ steps.scan_application.outputs.exit_code || 'not available' }} |"
+            echo "| SAST / Snyk Code scan | exit code ${{ steps.scan_code.outputs.exit_code || 'not available' }} |"
             echo "| Snyk container scan | exit code ${{ steps.scan_container.outputs.exit_code || 'not available' }} |"
             echo "| Raw high/critical container entries | ${{ steps.container_gate.outputs.raw_high_or_critical || 'not available' }} |"
             echo "| Unique blocking container findings | ${{ steps.container_gate.outputs.unique_high_or_critical || 'not available' }} |"
-            echo "| Container SBOM | $([ -s sbom.cyclonedx.json ] && echo 'Generated' || echo 'Not available') |"
+            echo "| Application SBOM | $([ -s app-sbom.cyclonedx.json ] && echo 'Generated' || echo 'Not available') |"
+            echo "| Container SBOM | $([ -s container-sbom.cyclonedx.json ] && echo 'Generated' || echo 'Not available') |"
             echo "| Validation evidence artifact | pr-validation-evidence |"
             echo ""
             echo "### Build identity"
@@ -436,6 +631,8 @@ jobs:
             echo "|---|---|"
             echo "| Commit | \`${{ github.sha }}\` |"
             echo "| Image name | \`${IMAGE_NAME}\` |"
+            echo "| Dockerfile | \`${DOCKERFILE_PATH}\` |"
+            echo "| Docker context | \`${DOCKER_CONTEXT}\` |"
 
             if [ -s image-id.txt ]; then
               echo "| Local image ID | \`$(cat image-id.txt)\` |"
@@ -444,9 +641,22 @@ jobs:
             fi
 
             echo ""
+            echo "### Security coverage"
+            echo ""
+            echo "| Area | Coverage |"
+            echo "|---|---|"
+            echo "| SCA | Snyk application dependency scan |"
+            echo "| SAST | Snyk Code scan |"
+            echo "| Container vulnerability scanning | Snyk container scan against locally built PR image |"
+            echo "| SBOM | Application and container CycloneDX SBOMs generated |"
+            echo "| DAST | Not part of PR validation; requires a deployed integrated application target |"
+            echo ""
             echo "### Notes"
             echo ""
             echo "- This workflow validates the PR image locally."
-            echo "- The release workflow should later push to a registry and capture the registry digest."
+            echo "- This workflow does not push to a registry or deploy to Kubernetes."
+            echo "- The release/deployment workflow should later push to ECR and capture the registry digest."
+            echo "- Direct Kubernetes deployment can be added as a separate workflow while keeping this PR validation workflow reusable."
+            echo "- If GitOps becomes available later, the deployment mechanism can change without replacing the validation stages."
             echo "- The SBOM and Snyk scan outputs are uploaded as workflow evidence artifacts."
           } >> "$GITHUB_STEP_SUMMARY"
