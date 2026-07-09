@@ -1,6 +1,9 @@
-name: PR Validation
+name: Validate Build Deploy
 
 on:
+  push:
+    branches:
+      - '**'
   pull_request:
     branches:
       - main
@@ -11,7 +14,7 @@ permissions:
   security-events: write
 
 concurrency:
-  group: pr-validation-${{ github.workflow }}-${{ github.ref }}
+  group: validate-build-deploy-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -50,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Validating pull request for $SERVICE_NAME"
+          echo "Validating $SERVICE_NAME"
           echo "Workflow triggered by: ${{ github.event_name }}"
           echo "Branch/ref: ${{ github.ref_name }}"
           echo "Commit SHA: ${{ github.sha }}"
@@ -667,5 +670,428 @@ jobs:
             echo "| Container vulnerability scanning | Snyk container scan against locally built PR image |"
             echo "| SBOM | Application and container CycloneDX SBOMs generated |"
             echo "| DAST | Not part of PR validation; requires a deployed integrated application target |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_and_push:
+    needs: validate
+    if: ${{ github.event_name == 'push' && (github.ref_name == 'cls-deploy' || github.ref_name == 'cls-deploy-to-uat') }}
+    name: Build and push image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      image_tag: ${{ steps.image_details.outputs.image_tag }}
+      image_uri: ${{ steps.image_details.outputs.image_uri }}
+      registry: ${{ steps.image_details.outputs.registry }}
+      repository: ${{ steps.image_details.outputs.repository }}
+
+    env:
+      SERVICE_NAME: letter-service
+      AWS_REGION: ${{ vars.ECR_REGION }}
+      AWS_ROLE_TO_ASSUME: ${{ secrets.ECR_ROLE_TO_ASSUME }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      DOCKERFILE_PATH: Dockerfile
+      DOCKER_BUILD_CONTEXT: .
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Show build info
+        run: |
+          set -euo pipefail
+
+          echo "Building image after successful validation"
+          echo "Workflow triggered by: ${{ github.event_name }}"
+          echo "Branch/ref: ${{ github.ref_name }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "AWS region: $AWS_REGION"
+          echo "ECR repository: $ECR_REPOSITORY"
+          echo "Dockerfile path: $DOCKERFILE_PATH"
+          echo "Docker build context: $DOCKER_BUILD_CONTEXT"
+
+          if [ -z "${AWS_REGION:-}" ]; then
+            echo "❌ ECR_REGION variable is not set"
+            exit 1
+          fi
+
+          if [ -z "${AWS_ROLE_TO_ASSUME:-}" ]; then
+            echo "❌ ECR_ROLE_TO_ASSUME secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${ECR_REPOSITORY:-}" ]; then
+            echo "❌ ECR_REPOSITORY variable is not set"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Resolve image details
+        id: image_details
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA=$(git rev-parse HEAD)
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          IMAGE_TAG="$SOURCE_SHA"
+          IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+          echo "repository=$ECR_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+          echo "$SOURCE_SHA" > source-sha.txt
+          echo "$REGISTRY" > ecr-registry.txt
+          echo "$ECR_REPOSITORY" > ecr-repository.txt
+          echo "$IMAGE_TAG" > image-tag.txt
+          echo "$IMAGE_URI" > image-uri.txt
+
+          echo "Source SHA: $SOURCE_SHA"
+          echo "Image URI: $IMAGE_URI"
+
+      - name: Login to Amazon ECR
+        run: |
+          set -euo pipefail
+
+          REGISTRY="${{ steps.image_details.outputs.registry }}"
+
+          echo "Logging into ECR registry: $REGISTRY"
+
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+      - name: Build Docker image
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${{ steps.image_details.outputs.image_uri }}"
+
+          echo "Building Docker image: $IMAGE_URI"
+
+          docker build \
+            --build-arg NODE_ENV=production \
+            -f "$DOCKERFILE_PATH" \
+            -t "$IMAGE_URI" \
+            "$DOCKER_BUILD_CONTEXT"
+
+      - name: Basic container start check
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${{ steps.image_details.outputs.image_uri }}"
+          CONTAINER_NAME="${SERVICE_NAME}-build-check"
+
+          echo "Starting container as a basic build check"
+
+          docker run -d \
+            -p 3001:3001 \
+            --name "$CONTAINER_NAME" \
+            "$IMAGE_URI"
+
+          sleep 5
+          docker ps --filter "name=$CONTAINER_NAME"
+          docker logs "$CONTAINER_NAME" || true
+          docker stop "$CONTAINER_NAME"
+          docker rm "$CONTAINER_NAME"
+
+      - name: Push Docker image
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${{ steps.image_details.outputs.image_uri }}"
+
+          echo "Pushing Docker image: $IMAGE_URI"
+          docker push "$IMAGE_URI"
+
+      - name: Capture published image digest
+        id: published_image
+        run: |
+          set -euo pipefail
+
+          IMAGE_TAG="${{ steps.image_details.outputs.image_tag }}"
+
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+
+          if [ -z "$IMAGE_DIGEST" ] || [ "$IMAGE_DIGEST" = "None" ]; then
+            echo "❌ Failed to capture ECR image digest"
+            exit 1
+          fi
+
+          echo "$IMAGE_DIGEST" > image-digest.txt
+          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+          echo "Published image digest: $IMAGE_DIGEST"
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: build-evidence
+          path: |
+            source-sha.txt
+            ecr-registry.txt
+            ecr-repository.txt
+            image-tag.txt
+            image-uri.txt
+            image-digest.txt
+          if-no-files-found: warn
+
+      - name: Write build summary
+        if: always()
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Build summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Branch | \`${{ github.ref_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| ECR repository | \`${ECR_REPOSITORY}\` |"
+            echo "| Image URI | \`${{ steps.image_details.outputs.image_uri || 'not available' }}\` |"
+            echo "| Image digest | \`${{ steps.published_image.outputs.image_digest || 'not available' }}\` |"
+            echo ""
+            echo "### Notes"
+            echo ""
+            echo "- This job only runs after validation succeeds."
+            echo "- This job only runs on \`cls-deploy\` and \`cls-deploy-to-uat\`."
+            echo "- The image tag is the checked-out commit SHA."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build_and_push
+    name: Deploy to ${{ github.ref_name == 'cls-deploy-to-uat' && 'uat' || 'dev' }}
+    environment: ${{ github.ref_name == 'cls-deploy-to-uat' && 'uat' || 'dev' }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      DEPLOY_ENV: ${{ github.ref_name == 'cls-deploy-to-uat' && 'uat' || 'dev' }}
+      IMAGE_TAG: ${{ needs.build_and_push.outputs.image_tag }}
+      REGISTRY: ${{ needs.build_and_push.outputs.registry }}
+      REPOSITORY: ${{ needs.build_and_push.outputs.repository }}
+
+      KUBE_CERT: ${{ secrets.KUBE_CERT }}
+      KUBE_CLUSTER: ${{ secrets.KUBE_CLUSTER }}
+      KUBE_NAMESPACE: ${{ secrets.KUBE_NAMESPACE }}
+      KUBE_TOKEN: ${{ secrets.KUBE_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Show deployment info
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          echo "Deploying to environment: $DEPLOY_ENV"
+          echo "Kubernetes cluster: $KUBE_CLUSTER"
+          echo "Kubernetes namespace: $KUBE_NAMESPACE"
+          echo "Manifest directory: $MANIFEST_DIR"
+          echo "Image URI: $IMAGE_URI"
+
+          if [ -z "${DEPLOY_ENV:-}" ]; then
+            echo "❌ DEPLOY_ENV is not set"
+            exit 1
+          fi
+
+          if [ -z "${IMAGE_TAG:-}" ]; then
+            echo "❌ IMAGE_TAG is not set"
+            exit 1
+          fi
+
+          if [ -z "${REGISTRY:-}" ]; then
+            echo "❌ REGISTRY is not set"
+            exit 1
+          fi
+
+          if [ -z "${REPOSITORY:-}" ]; then
+            echo "❌ REPOSITORY is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_CERT:-}" ]; then
+            echo "❌ KUBE_CERT secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_CLUSTER:-}" ]; then
+            echo "❌ KUBE_CLUSTER secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_NAMESPACE:-}" ]; then
+            echo "❌ KUBE_NAMESPACE secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_TOKEN:-}" ]; then
+            echo "❌ KUBE_TOKEN secret is not set"
+            exit 1
+          fi
+
+          if [ ! -d "$MANIFEST_DIR" ]; then
+            echo "❌ Kubernetes manifest directory does not exist: $MANIFEST_DIR"
+            exit 1
+          fi
+
+          if [ ! -f "$MANIFEST_DIR/deploy-main.yaml" ]; then
+            echo "❌ Missing manifest: $MANIFEST_DIR/deploy-main.yaml"
+            exit 1
+          fi
+
+          if [ ! -f "$MANIFEST_DIR/deploy-worker.yaml" ]; then
+            echo "❌ Missing manifest: $MANIFEST_DIR/deploy-worker.yaml"
+            exit 1
+          fi
+
+          if [ ! -f "$MANIFEST_DIR/service.yaml" ]; then
+            echo "❌ Missing manifest: $MANIFEST_DIR/service.yaml"
+            exit 1
+          fi
+
+      - name: Authenticate with Kubernetes cluster
+        run: |
+          set -euo pipefail
+
+          echo "Authenticating with cluster $KUBE_CLUSTER namespace $KUBE_NAMESPACE"
+
+          echo -n "$KUBE_CERT" | base64 -d > ca.crt
+
+          kubectl config set-cluster "$KUBE_CLUSTER" \
+            --certificate-authority=./ca.crt \
+            --server="https://${KUBE_CLUSTER}"
+
+          kubectl config set-credentials deploy-user \
+            --token="$KUBE_TOKEN"
+
+          kubectl config set-context "$KUBE_CLUSTER" \
+            --cluster="$KUBE_CLUSTER" \
+            --user=deploy-user \
+            --namespace="$KUBE_NAMESPACE"
+
+          kubectl config use-context "$KUBE_CLUSTER"
+          kubectl config current-context
+
+          echo "Checking namespace access"
+          kubectl -n "$KUBE_NAMESPACE" get pods
+
+      - name: Deploy to Kubernetes
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          APP_CONTAINER_NAME="letter-app-${DEPLOY_ENV}"
+          WORKER_CONTAINER_NAME="letter-worker-${DEPLOY_ENV}"
+
+          echo "Deploying image: $IMAGE_URI"
+          echo "Manifest directory: $MANIFEST_DIR"
+          echo "App container name: $APP_CONTAINER_NAME"
+          echo "Worker container name: $WORKER_CONTAINER_NAME"
+
+          echo "Applying app deployment"
+          kubectl set image -f "$MANIFEST_DIR/deploy-main.yaml" \
+            "$APP_CONTAINER_NAME=$IMAGE_URI" \
+            --local -o yaml | kubectl -n "$KUBE_NAMESPACE" apply -f -
+
+          echo "Applying worker deployment"
+          kubectl set image -f "$MANIFEST_DIR/deploy-worker.yaml" \
+            "$WORKER_CONTAINER_NAME=$IMAGE_URI" \
+            --local -o yaml | kubectl -n "$KUBE_NAMESPACE" apply -f -
+
+          echo "Applying service"
+          kubectl -n "$KUBE_NAMESPACE" apply -f "$MANIFEST_DIR/service.yaml"
+
+      - name: Wait for rollout
+        run: |
+          set -euo pipefail
+
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          echo "Waiting for app deployment rollout"
+          kubectl -n "$KUBE_NAMESPACE" rollout status -f "$MANIFEST_DIR/deploy-main.yaml" --timeout=300s
+
+          echo "Waiting for worker deployment rollout"
+          kubectl -n "$KUBE_NAMESPACE" rollout status -f "$MANIFEST_DIR/deploy-worker.yaml" --timeout=300s
+
+      - name: Verify deployed image
+        run: |
+          set -euo pipefail
+
+          EXPECTED_IMAGE="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+
+          echo "Expected image: $EXPECTED_IMAGE"
+          echo "Images currently referenced by deployments in $KUBE_NAMESPACE:"
+
+          kubectl -n "$KUBE_NAMESPACE" get deployment \
+            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{range .spec.template.spec.containers[*]}{.name}{"="}{.image}{" "}{end}{"\n"}{end}'
+
+          MATCHING_CONTAINERS=$(kubectl -n "$KUBE_NAMESPACE" get deployment -o json | jq -r --arg image "$EXPECTED_IMAGE" '
+            [
+              .items[]
+              | .spec.template.spec.containers[]
+              | select(.image == $image)
+            ]
+            | length
+          ')
+
+          if [ "$MATCHING_CONTAINERS" -lt 2 ]; then
+            echo "❌ Expected image was not found on both app and worker deployments"
+            echo "Expected at least 2 matching containers, found: $MATCHING_CONTAINERS"
+            exit 1
+          fi
+
+          echo "✅ Expected image is referenced by app and worker deployments"
+
+      - name: Write deployment summary
+        if: always()
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          {
+            echo "## Deployment summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | \`${DEPLOY_ENV}\` |"
+            echo "| Namespace | \`${KUBE_NAMESPACE}\` |"
+            echo "| Cluster | \`${KUBE_CLUSTER}\` |"
+            echo "| Manifest directory | \`${MANIFEST_DIR}\` |"
+            echo "| Image | \`${IMAGE_URI}\` |"
+            echo "| Ref | \`${{ github.sha }}\` |"
+            echo ""
+            echo "### Applied manifests"
+            echo ""
+            echo "- \`${MANIFEST_DIR}/deploy-main.yaml\`"
+            echo "- \`${MANIFEST_DIR}/deploy-worker.yaml\`"
+            echo "- \`${MANIFEST_DIR}/service.yaml\`"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
