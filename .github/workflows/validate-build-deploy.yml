@@ -23,14 +23,14 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      SERVICE_NAME: letter-service
+      SERVICE_NAME: cica-apply-letter-service
 
       SNYK_CLIENT_ID: ${{ secrets.SNYK_CLIENT_ID }}
       SNYK_CLIENT_SECRET: ${{ secrets.SNYK_CLIENT_SECRET }}
       SNYK_API_URL: ${{ vars.SNYK_API_URL || 'https://api.snyk.io' }}
 
       NODE_VERSION: "24.16.0"
-      IMAGE_NAME: letter-service:pr-validation
+      IMAGE_NAME: cica-apply-letter-service:pr-validation
       DOCKERFILE_PATH: Dockerfile
       DOCKER_BUILD_CONTEXT: .
       SNYK_SEVERITY_THRESHOLD: high
@@ -675,7 +675,7 @@ jobs:
 
   build_and_push:
     needs: validate
-    if: ${{ github.event_name == 'push' && (github.ref_name == 'cls-deploy' || github.ref_name == 'cls-deploy-to-uat') }}
+    if: ${{ github.event_name == 'push' && github.ref_name == 'cls-deploy' }}
     name: Build and push image
     runs-on: ubuntu-latest
 
@@ -690,9 +690,10 @@ jobs:
       repository: ${{ steps.image_details.outputs.repository }}
 
     env:
-      SERVICE_NAME: letter-service
+      SERVICE_NAME: cica-apply-letter-service
       AWS_REGION: ${{ vars.ECR_REGION }}
       AWS_ROLE_TO_ASSUME: ${{ secrets.ECR_ROLE_TO_ASSUME }}
+      ECR_REGISTRY_URL: ${{ secrets.ECR_REGISTRY_URL }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
       DOCKERFILE_PATH: Dockerfile
       DOCKER_BUILD_CONTEXT: .
@@ -724,6 +725,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "${ECR_REGISTRY_URL:-}" ]; then
+            echo "❌ ECR_REGISTRY_URL secret is not set"
+            exit 1
+          fi
+
           if [ -z "${ECR_REPOSITORY:-}" ]; then
             echo "❌ ECR_REPOSITORY variable is not set"
             exit 1
@@ -742,8 +748,7 @@ jobs:
           set -euo pipefail
 
           SOURCE_SHA=$(git rev-parse HEAD)
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          REGISTRY="${ECR_REGISTRY_URL}"
           IMAGE_TAG="$SOURCE_SHA"
           IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
@@ -869,24 +874,18 @@ jobs:
             echo "| Image URI | \`${{ steps.image_details.outputs.image_uri || 'not available' }}\` |"
             echo "| Image digest | \`${{ steps.published_image.outputs.image_digest || 'not available' }}\` |"
             echo ""
-            echo "### Notes"
-            echo ""
-            echo "- This job only runs after validation succeeds."
-            echo "- This job only runs on \`cls-deploy\` and \`cls-deploy-to-uat\`."
-            echo "- The image tag is the checked-out commit SHA."
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
     needs: build_and_push
-    name: Deploy to ${{ github.ref_name == 'cls-deploy-to-uat' && 'uat' || 'dev' }}
-    environment: ${{ github.ref_name == 'cls-deploy-to-uat' && 'uat' || 'dev' }}
+    name: Deploy to dev
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
 
     env:
-      DEPLOY_ENV: ${{ github.ref_name == 'cls-deploy-to-uat' && 'uat' || 'dev' }}
+      DEPLOY_ENV: dev
       IMAGE_TAG: ${{ needs.build_and_push.outputs.image_tag }}
       REGISTRY: ${{ needs.build_and_push.outputs.registry }}
       REPOSITORY: ${{ needs.build_and_push.outputs.repository }}
@@ -977,7 +976,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Authenticating with cluster $KUBE_CLUSTER namespace $KUBE_NAMESPACE"
+          echo "Authenticating with namespace $KUBE_NAMESPACE"
 
           echo -n "$KUBE_CERT" | base64 -d > ca.crt
 
