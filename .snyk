@@ -7,3 +7,15 @@ ignore:
           Snyk reports no fixed Debian 12 version. Review upon expiry.
         expires: '2026-07-23T00:00:00.000Z'
         created: '2026-06-23T00:00:00.000Z'
+  SNYK-JS-EXTRACTZIP-17660777:
+      - '*':
+          reason: >-
+            Temporary exception for transitive extract-zip vulnerability via
+            q-letter-transformer -> puppeteer-core -> @puppeteer/browsers.
+            Snyk reports no fixed version and no upgrade path. Risk is considered
+            limited because the service does not accept or extract arbitrary user
+            supplied zip archives through this dependency. Review when Puppeteer or
+            @puppeteer/browsers releases a fix or replacement.
+          expires: '2026-08-10T00:00:00.000Z'
+          created: '2026-07-10T00:00:00.000Z'
+          source: cli
