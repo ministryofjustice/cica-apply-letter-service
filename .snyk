@@ -8,14 +8,37 @@ ignore:
         expires: '2026-07-23T00:00:00.000Z'
         created: '2026-06-23T00:00:00.000Z'
   SNYK-JS-EXTRACTZIP-17660777:
-      - '*':
-          reason: >-
-            Temporary exception for transitive extract-zip vulnerability via
-            q-letter-transformer -> puppeteer-core -> @puppeteer/browsers.
-            Snyk reports no fixed version and no upgrade path. Risk is considered
-            limited because the service does not accept or extract arbitrary user
-            supplied zip archives through this dependency. Review when Puppeteer or
-            @puppeteer/browsers releases a fix or replacement.
-          expires: '2026-08-10T00:00:00.000Z'
-          created: '2026-07-10T00:00:00.000Z'
-          source: cli
+    - '*':
+        reason: >-
+          Temporary exception for transitive extract-zip vulnerability via
+          q-letter-transformer -> puppeteer-core -> @puppeteer/browsers.
+          Snyk reports no fixed version and no upgrade path. Risk is considered
+          limited because the service does not accept or extract arbitrary user
+          supplied zip archives through this dependency. Review when Puppeteer or
+          @puppeteer/browsers releases a fix or replacement.
+        expires: '2026-08-10T00:00:00.000Z'
+        created: '2026-07-10T00:00:00.000Z'
+        source: cli
+  SNYK-DEBIAN12-ACL-17677870:
+    - '*':
+        reason: >-
+          Temporary exception for acl vulnerability in Debian 12 base image.
+          Snyk reports this as high severity but not fixable in the current
+          Debian 12 image. The package is inherited from the runtime base image
+          rather than introduced directly by application code. Review when a
+          fixed Debian package or updated Node base image is available.
+        expires: '2026-08-10T00:00:00.000Z'
+        created: '2026-07-10T00:00:00.000Z'
+        source: cli
+
+  SNYK-DEBIAN12-ATTR-17678193:
+    - '*':
+        reason: >-
+          Temporary exception for attr vulnerability in Debian 12 base image.
+          Snyk reports this as high severity but not fixable in the current
+          Debian 12 image. The package is inherited from the runtime base image
+          rather than introduced directly by application code. Review when a
+          fixed Debian package or updated Node base image is available.
+        expires: '2026-08-10T00:00:00.000Z'
+        created: '2026-07-10T00:00:00.000Z'
+        source: cli
