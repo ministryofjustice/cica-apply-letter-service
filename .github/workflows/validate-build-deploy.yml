@@ -1,0 +1,1093 @@
+name: Validate Build Deploy
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: validate-build-deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate letter service
+    runs-on: ubuntu-latest
+
+    env:
+      SERVICE_NAME: cica-apply-letter-service
+
+      SNYK_CLIENT_ID: ${{ secrets.SNYK_CLIENT_ID }}
+      SNYK_CLIENT_SECRET: ${{ secrets.SNYK_CLIENT_SECRET }}
+      SNYK_API_URL: ${{ vars.SNYK_API_URL || 'https://api.snyk.io' }}
+
+      NODE_VERSION: "24.16.0"
+      IMAGE_NAME: cica-apply-letter-service:pr-validation
+      DOCKERFILE_PATH: Dockerfile
+      DOCKER_BUILD_CONTEXT: .
+      SNYK_SEVERITY_THRESHOLD: high
+
+      RUN_LINT: "true"
+      RUN_TESTS: "true"
+      RUN_SAST: "true"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Show validation info
+        run: |
+          set -euo pipefail
+
+          echo "Validating $SERVICE_NAME"
+          echo "Workflow triggered by: ${{ github.event_name }}"
+          echo "Branch/ref: ${{ github.ref_name }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Service name: $SERVICE_NAME"
+          echo "Node version: $NODE_VERSION"
+          echo "Snyk API URL: $SNYK_API_URL"
+          echo "Image name: $IMAGE_NAME"
+          echo "Dockerfile path: $DOCKERFILE_PATH"
+          echo "Docker build context: $DOCKER_BUILD_CONTEXT"
+          echo "Snyk severity threshold: $SNYK_SEVERITY_THRESHOLD"
+          echo "Run lint: $RUN_LINT"
+          echo "Run tests: $RUN_TESTS"
+          echo "Run SAST: $RUN_SAST"
+
+      - name: Validate GitHub Action pinning
+        run: |
+          set -euo pipefail
+
+          echo "=== CHECKING GITHUB ACTION PINNING ==="
+
+          UNPINNED_COUNT=0
+
+          while IFS= read -r WORKFLOW_FILE; do
+            while IFS=: read -r LINE_NUMBER LINE_CONTENT; do
+              ACTION_REF=$(echo "$LINE_CONTENT" | sed -nE 's/.*uses:[[:space:]]*([^[:space:]#]+).*/\1/p')
+
+              if [ -z "$ACTION_REF" ]; then
+                continue
+              fi
+
+              REF="${ACTION_REF##*@}"
+
+              if ! echo "$REF" | grep -Eq '^[a-f0-9]{40}$'; then
+                echo "::error file=${WORKFLOW_FILE},line=${LINE_NUMBER}::GitHub Action is not pinned to a full commit SHA: ${ACTION_REF}"
+                UNPINNED_COUNT=$((UNPINNED_COUNT + 1))
+              fi
+            done < <(grep -nE 'uses:[[:space:]]*[^[:space:]#]+@[^[:space:]#]+' "$WORKFLOW_FILE" || true)
+          done < <(find .github/workflows -type f \( -name "*.yml" -o -name "*.yaml" \) | sort)
+
+          if [ "$UNPINNED_COUNT" -gt 0 ]; then
+            echo "❌ $UNPINNED_COUNT unpinned GitHub Action reference(s) found"
+            echo "All GitHub Actions must be pinned to a full commit SHA."
+            exit 1
+          fi
+
+          echo "✅ All GitHub Actions appear to be pinned to full commit SHAs"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        if: ${{ env.RUN_LINT == 'true' }}
+        run: npm run lint
+
+      - name: Test
+        if: ${{ env.RUN_TESTS == 'true' }}
+        run: npm test
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Get Snyk OAuth access token
+        id: snyk_auth
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SNYK_CLIENT_ID:-}" ]; then
+            echo "❌ SNYK_CLIENT_ID secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${SNYK_CLIENT_SECRET:-}" ]; then
+            echo "❌ SNYK_CLIENT_SECRET secret is not set"
+            exit 1
+          fi
+
+          echo "Requesting short-lived Snyk OAuth access token"
+
+          RESPONSE=$(curl --fail --silent --show-error \
+            --request POST \
+            --url "${SNYK_API_URL}/oauth2/token" \
+            --header "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=${SNYK_CLIENT_ID}" \
+            --data-urlencode "client_secret=${SNYK_CLIENT_SECRET}")
+
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token')
+          EXPIRES_IN=$(echo "$RESPONSE" | jq -r '.expires_in // "unknown"')
+
+          if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
+            echo "❌ Failed to retrieve Snyk OAuth access token"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "SNYK_OAUTH_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "SNYK_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "expires_in=$EXPIRES_IN" >> "$GITHUB_OUTPUT"
+
+          echo "Snyk OAuth token retrieved successfully"
+          echo "Token lifetime seconds: $EXPIRES_IN"
+
+      - name: Configure Snyk policy args
+        id: snyk_policy
+        run: |
+          set -euo pipefail
+
+          if [ -f .snyk ]; then
+            echo "args=--policy-path=.snyk" >> "$GITHUB_OUTPUT"
+            echo "Using .snyk policy file"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "No .snyk policy file found"
+          fi
+
+      - name: Validate Snyk policy suppressions
+        run: |
+          set -euo pipefail
+
+          echo "=== VALIDATING SNYK POLICY FILE ==="
+
+          if [ ! -f .snyk ]; then
+            echo "No .snyk policy file found."
+            exit 0
+          fi
+
+          cat .snyk
+          echo ""
+
+          if grep -qE '^[[:space:]]{2}[A-Za-z0-9._-]+:[[:space:]]*$' .snyk; then
+            echo "Snyk ignore entries detected."
+
+            if ! grep -q 'reason:' .snyk; then
+              echo "❌ .snyk contains ignore entries but no reason field."
+              echo "Each suppression should explain why the risk is accepted."
+              exit 1
+            fi
+
+            if ! grep -q 'expires:' .snyk; then
+              echo "❌ .snyk contains ignore entries but no expires field."
+              echo "Each suppression should have an expiry date."
+              exit 1
+            fi
+
+            echo "✅ .snyk contains reason and expires fields."
+            echo "::warning::.snyk suppressions are present. Review that they are specific, justified, and time-limited."
+          else
+            echo "No active ignore entries detected in .snyk."
+          fi
+
+      - name: Scan application dependencies with Snyk
+        id: scan_application
+        run: |
+          set -euo pipefail
+
+          echo "=== SCA / APPLICATION DEPENDENCY SCAN START ==="
+
+          set +e
+          snyk test \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --all-projects \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --json > snyk-test-results.json 2> snyk-test-results.log
+
+          EXIT_CODE=$?
+          set -e
+
+          echo "Snyk raw exit code: $EXIT_CODE"
+
+          if [ ! -s snyk-test-results.json ] || ! jq -e . snyk-test-results.json >/dev/null 2>&1; then
+            echo "::warning::snyk-test-results.json missing or invalid; writing fallback JSON"
+            printf '{"ok":false,"error":"snyk test --json produced no valid JSON","exitCode":%s,"vulnerabilities":[],"applications":[]}\n' "$EXIT_CODE" > snyk-test-results.json
+          fi
+
+          snyk test \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --all-projects \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --sarif > snyk-test-results.sarif 2>> snyk-test-results.log || true
+
+          if [ ! -s snyk-test-results.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > snyk-test-results.sarif
+          fi
+
+          echo "=== APPLICATION VULN SUMMARY ==="
+
+          jq '
+            def all_vulns:
+              [
+                (.vulnerabilities[]?),
+                (.applications[]?.vulnerabilities[]?)
+              ];
+            {
+              total: (all_vulns | length),
+              high: (all_vulns | map(select(.severity=="high")) | length),
+              critical: (all_vulns | map(select(.severity=="critical")) | length),
+              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length),
+              uniqueHighOrCritical: (all_vulns | map(select(.severity=="high" or .severity=="critical")) | unique_by(.id) | length)
+            }' snyk-test-results.json || echo "::warning::Unable to parse snyk-test-results.json"
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload application SARIF to GitHub
+        if: ${{ hashFiles('snyk-test-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@eda5730a8bfb740e03a28087a958444c646e5842 # v4.36.0
+        with:
+          sarif_file: snyk-test-results.sarif
+
+      - name: Debug application scan output
+        if: always()
+        run: |
+          set -euo pipefail
+
+          echo "=== SNYK APPLICATION STDERR ==="
+          cat snyk-test-results.log || true
+          echo ""
+          echo "=== SNYK APPLICATION SARIF HEAD ==="
+          head -n 20 snyk-test-results.sarif || true
+
+      - name: Fail workflow on application vulnerabilities
+        if: ${{ steps.scan_application.outputs.exit_code != '0' }}
+        run: |
+          set -euo pipefail
+
+          EXIT_CODE="${{ steps.scan_application.outputs.exit_code }}"
+
+          if [ "$EXIT_CODE" = "1" ]; then
+            echo "❌ High/critical application dependency vulnerabilities found."
+            echo "Review the Snyk output and either fix the vulnerability or document an approved policy suppression."
+          elif [ "$EXIT_CODE" = "2" ]; then
+            echo "❌ Snyk application scan encountered an error."
+            echo "This could indicate authentication failure, network issues, or misconfiguration."
+          else
+            echo "❌ Snyk application scan failed with unexpected exit code: $EXIT_CODE"
+          fi
+
+          exit 1
+
+      - name: Generate application SBOM
+        run: |
+          set -euo pipefail
+
+          echo "=== GENERATING APPLICATION SBOM ==="
+
+          snyk sbom \
+            --format=cyclonedx1.6+json \
+            > app-sbom.cyclonedx.json
+
+          if [ ! -s app-sbom.cyclonedx.json ] || ! jq -e . app-sbom.cyclonedx.json >/dev/null 2>&1; then
+            echo "❌ Application SBOM generation failed or produced invalid JSON"
+            exit 1
+          fi
+
+          echo "✅ Application SBOM generated: app-sbom.cyclonedx.json"
+
+      - name: Scan source code with Snyk Code
+        id: scan_code
+        if: ${{ env.RUN_SAST == 'true' }}
+        run: |
+          set -euo pipefail
+
+          echo "=== SAST / SNYK CODE SCAN START ==="
+
+          set +e
+          snyk code test \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --json > snyk-code-test-results.json 2> snyk-code-test-results.log
+
+          EXIT_CODE=$?
+          set -e
+
+          echo "Snyk Code raw exit code: $EXIT_CODE"
+
+          if [ ! -s snyk-code-test-results.json ] || ! jq -e . snyk-code-test-results.json >/dev/null 2>&1; then
+            echo "::warning::snyk-code-test-results.json missing or invalid; writing fallback JSON"
+            printf '{"ok":false,"error":"snyk code test --json produced no valid JSON","exitCode":%s,"runs":[]}\n' "$EXIT_CODE" > snyk-code-test-results.json
+          fi
+
+          snyk code test \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --sarif > snyk-code-test-results.sarif 2>> snyk-code-test-results.log || true
+
+          if [ ! -s snyk-code-test-results.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > snyk-code-test-results.sarif
+          fi
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SAST SARIF to GitHub
+        if: ${{ env.RUN_SAST == 'true' && hashFiles('snyk-code-test-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@eda5730a8bfb740e03a28087a958444c646e5842 # v4.36.0
+        with:
+          sarif_file: snyk-code-test-results.sarif
+
+      - name: Debug SAST scan output
+        if: always()
+        run: |
+          set -euo pipefail
+
+          echo "=== SNYK CODE STDERR ==="
+          cat snyk-code-test-results.log || true
+          echo ""
+          echo "=== SNYK CODE SARIF HEAD ==="
+          head -n 20 snyk-code-test-results.sarif || true
+
+      - name: Fail workflow on SAST findings
+        if: ${{ env.RUN_SAST == 'true' && steps.scan_code.outputs.exit_code != '0' }}
+        run: |
+          set -euo pipefail
+
+          EXIT_CODE="${{ steps.scan_code.outputs.exit_code }}"
+
+          if [ "$EXIT_CODE" = "1" ]; then
+            echo "❌ High/critical SAST findings found."
+            echo "Review the Snyk Code output and either fix the issue or document an approved suppression."
+          elif [ "$EXIT_CODE" = "2" ]; then
+            echo "❌ Snyk Code scan encountered an error."
+            echo "This could indicate authentication failure, network issues, unsupported configuration, or Snyk Code availability."
+          else
+            echo "❌ Snyk Code scan failed with unexpected exit code: $EXIT_CODE"
+          fi
+
+          exit 1
+
+      - name: Validate Dockerfile policy
+        run: |
+          set -euo pipefail
+
+          echo "=== VALIDATING DOCKERFILE POLICY ==="
+
+          if [ ! -f "$DOCKERFILE_PATH" ]; then
+            echo "❌ Dockerfile not found at path: $DOCKERFILE_PATH"
+            exit 1
+          fi
+
+          if grep -Ei '^[[:space:]]*FROM[[:space:]]+[^#]*:latest([[:space:]]|$)' "$DOCKERFILE_PATH"; then
+            echo "❌ Dockerfile must not use :latest base images"
+            exit 1
+          fi
+
+          if ! grep -Eq '^[[:space:]]*USER[[:space:]]+[^[:space:]]+' "$DOCKERFILE_PATH"; then
+            echo "❌ Dockerfile must set a non-root USER in the runtime stage"
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*COPY[[:space:]]+\.[[:space:]]+\.' "$DOCKERFILE_PATH"; then
+            echo "❌ Dockerfile must not use broad 'COPY . .'"
+            echo "Use explicit COPY statements and .dockerignore allow-listing instead."
+            exit 1
+          fi
+
+          if grep -Eq '^[[:space:]]*FROM[[:space:]]+node:.*-slim' "$DOCKERFILE_PATH"; then
+            if ! grep -q 'rm -rf /usr/local/lib/node_modules/npm' "$DOCKERFILE_PATH"; then
+              echo "❌ Node runtime images should remove npm from the final runtime stage"
+              exit 1
+            fi
+          fi
+
+          if ! grep -Eq '^[[:space:]]*FROM[[:space:]]+[^[:space:]]+@sha256:' "$DOCKERFILE_PATH"; then
+            echo "::warning::Dockerfile base images are not pinned by digest. This should become mandatory once repos are ready."
+          else
+            echo "✅ Dockerfile uses digest-pinned base image references"
+          fi
+
+          echo "✅ Dockerfile policy checks passed"
+
+      - name: Build Docker image
+        run: |
+          set -euo pipefail
+
+          echo "Building Docker image for PR validation only"
+          docker build \
+            --build-arg NODE_ENV=production \
+            -f "$DOCKERFILE_PATH" \
+            -t "$IMAGE_NAME" \
+            "$DOCKER_BUILD_CONTEXT"
+
+      - name: Scan container image with Snyk
+        id: scan_container
+        run: |
+          set -euo pipefail
+
+          echo "=== CONTAINER SCAN START ==="
+          echo "Scanning image: $IMAGE_NAME"
+
+          set +e
+          snyk container test "$IMAGE_NAME" \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --file="$DOCKERFILE_PATH" \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --json > snyk-container-test-results.json 2> snyk-container-test-results.log
+
+          EXIT_CODE=$?
+          set -e
+
+          echo "Snyk raw exit code: $EXIT_CODE"
+
+          if [ ! -s snyk-container-test-results.json ] || ! jq -e . snyk-container-test-results.json >/dev/null 2>&1; then
+            echo "::warning::snyk-container-test-results.json missing or invalid; writing fallback JSON"
+            printf '{"ok":false,"error":"snyk container test --json produced no valid JSON","exitCode":%s,"vulnerabilities":[],"applications":[]}\n' "$EXIT_CODE" > snyk-container-test-results.json
+          fi
+
+          snyk container test "$IMAGE_NAME" \
+            ${{ steps.snyk_policy.outputs.args }} \
+            --file="$DOCKERFILE_PATH" \
+            --severity-threshold="$SNYK_SEVERITY_THRESHOLD" \
+            --sarif > snyk-container-test-results.sarif 2>> snyk-container-test-results.log || true
+
+          if [ ! -s snyk-container-test-results.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > snyk-container-test-results.sarif
+          fi
+
+          echo "=== CONTAINER VULN SUMMARY ==="
+
+          jq '
+            def all_vulns:
+              [
+                (.vulnerabilities[]?),
+                (.applications[]?.vulnerabilities[]?)
+              ];
+            {
+              total: (all_vulns | length),
+              high: (all_vulns | map(select(.severity=="high")) | length),
+              critical: (all_vulns | map(select(.severity=="critical")) | length),
+              fixable: (all_vulns | map(select(.isUpgradable==true or .isPatchable==true)) | length),
+              uniqueHighOrCritical: (all_vulns | map(select(.severity=="high" or .severity=="critical")) | unique_by(.id) | length)
+            }' snyk-container-test-results.json || echo "::warning::Unable to parse snyk-container-test-results.json"
+
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Upload container SARIF to GitHub
+        if: ${{ hashFiles('snyk-container-test-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@eda5730a8bfb740e03a28087a958444c646e5842 # v4.36.0
+        with:
+          sarif_file: snyk-container-test-results.sarif
+
+      - name: Debug container scan output
+        if: always()
+        run: |
+          set -euo pipefail
+
+          echo "=== SNYK CONTAINER STDERR ==="
+          cat snyk-container-test-results.log || true
+          echo ""
+          echo "=== SNYK CONTAINER SARIF HEAD ==="
+          head -n 20 snyk-container-test-results.sarif || true
+
+      - name: Fail workflow on container scan error
+        if: ${{ steps.scan_container.outputs.exit_code == '2' }}
+        run: |
+          set -euo pipefail
+
+          echo "❌ Snyk container scan encountered an error."
+          echo "This could indicate authentication failure, network issues, or misconfiguration."
+          exit 1
+
+      - name: Evaluate container vulnerability gate
+        id: container_gate
+        run: |
+          set -euo pipefail
+
+          echo "=== EVALUATING CONTAINER VULNERABILITIES ==="
+
+          if [ ! -s snyk-container-test-results.json ]; then
+            echo "❌ No Snyk container JSON output found."
+            exit 1
+          fi
+
+          RAW_HIGH_OR_CRITICAL=$(jq '
+            [
+              (.vulnerabilities[]?),
+              (.applications[]?.vulnerabilities[]?)
+            ]
+            | map(select(.severity=="high" or .severity=="critical"))
+            | length
+          ' snyk-container-test-results.json)
+
+          UNIQUE_HIGH_OR_CRITICAL=$(jq '
+            [
+              (.vulnerabilities[]?),
+              (.applications[]?.vulnerabilities[]?)
+            ]
+            | map(select(.severity=="high" or .severity=="critical"))
+            | unique_by(.id)
+            | length
+          ' snyk-container-test-results.json)
+
+          echo "Raw high/critical container vulnerability entries: $RAW_HIGH_OR_CRITICAL"
+          echo "Unique high/critical container vulnerabilities after Snyk policy: $UNIQUE_HIGH_OR_CRITICAL"
+
+          echo "raw_high_or_critical=$RAW_HIGH_OR_CRITICAL" >> "$GITHUB_OUTPUT"
+          echo "unique_high_or_critical=$UNIQUE_HIGH_OR_CRITICAL" >> "$GITHUB_OUTPUT"
+
+          if [ "$UNIQUE_HIGH_OR_CRITICAL" -gt 0 ]; then
+            echo "❌ Failing build due to remaining high/critical container vulnerabilities"
+            echo ""
+            echo "=== LIST OF FAILING UNIQUE VULNERABILITIES ==="
+
+            jq -r '
+              [
+                (.vulnerabilities[]?),
+                (.applications[]?.vulnerabilities[]?)
+              ]
+              | map(select(.severity=="high" or .severity=="critical"))
+              | unique_by(.id)
+              | .[]
+              | "- \(.id) | package=\(.packageName) | severity=\(.severity) | fixable=\((.isUpgradable == true) or (.isPatchable == true))"
+            ' snyk-container-test-results.json
+
+            exit 1
+          fi
+
+          echo "✅ No blocking high/critical container vulnerabilities found after Snyk policy"
+
+      - name: Generate container SBOM
+        run: |
+          set -euo pipefail
+
+          echo "=== GENERATING CONTAINER SBOM ==="
+
+          snyk container sbom "$IMAGE_NAME" \
+            --format=cyclonedx1.6+json \
+            > container-sbom.cyclonedx.json
+
+          if [ ! -s container-sbom.cyclonedx.json ] || ! jq -e . container-sbom.cyclonedx.json >/dev/null 2>&1; then
+            echo "❌ Container SBOM generation failed or produced invalid JSON"
+            exit 1
+          fi
+
+          echo "✅ Container SBOM generated: container-sbom.cyclonedx.json"
+
+      - name: Capture Docker image identity
+        run: |
+          set -euo pipefail
+
+          echo "=== CAPTURING IMAGE IDENTITY ==="
+
+          docker image inspect "$IMAGE_NAME" --format='{{.Id}}' > image-id.txt
+          docker image inspect "$IMAGE_NAME" --format='{{json .RepoTags}}' > image-tags.json
+
+          echo "Image ID:"
+          cat image-id.txt
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: pr-validation-evidence
+          path: |
+            snyk-test-results.json
+            snyk-test-results.log
+            snyk-test-results.sarif
+            snyk-code-test-results.json
+            snyk-code-test-results.log
+            snyk-code-test-results.sarif
+            snyk-container-test-results.json
+            snyk-container-test-results.log
+            snyk-container-test-results.sarif
+            app-sbom.cyclonedx.json
+            container-sbom.cyclonedx.json
+            image-id.txt
+            image-tags.json
+          if-no-files-found: warn
+
+      - name: Write validation summary
+        if: always()
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## PR validation summary"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Install | Completed |"
+            echo "| Lint | $([ "$RUN_LINT" = "true" ] && echo 'Completed' || echo 'Skipped') |"
+            echo "| Test | $([ "$RUN_TESTS" = "true" ] && echo 'Completed' || echo 'Skipped') |"
+            echo "| Docker build | Completed |"
+            echo "| Snyk OAuth token | retrieved; expires in ${{ steps.snyk_auth.outputs.expires_in || 'unknown' }} seconds |"
+            echo "| SCA / Snyk application scan | exit code ${{ steps.scan_application.outputs.exit_code || 'not available' }} |"
+            echo "| SAST / Snyk Code scan | exit code ${{ steps.scan_code.outputs.exit_code || 'not available' }} |"
+            echo "| Snyk container scan | exit code ${{ steps.scan_container.outputs.exit_code || 'not available' }} |"
+            echo "| Raw high/critical container entries | ${{ steps.container_gate.outputs.raw_high_or_critical || 'not available' }} |"
+            echo "| Unique blocking container findings | ${{ steps.container_gate.outputs.unique_high_or_critical || 'not available' }} |"
+            echo "| Application SBOM | $([ -s app-sbom.cyclonedx.json ] && echo 'Generated' || echo 'Not available') |"
+            echo "| Container SBOM | $([ -s container-sbom.cyclonedx.json ] && echo 'Generated' || echo 'Not available') |"
+            echo "| Validation evidence artifact | pr-validation-evidence |"
+            echo ""
+            echo "### Build identity"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Service | \`${SERVICE_NAME}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Image name | \`${IMAGE_NAME}\` |"
+            echo "| Dockerfile | \`${DOCKERFILE_PATH}\` |"
+            echo "| Docker build context | \`${DOCKER_BUILD_CONTEXT}\` |"
+
+            if [ -s image-id.txt ]; then
+              echo "| Local image ID | \`$(cat image-id.txt)\` |"
+            else
+              echo "| Local image ID | Not available |"
+            fi
+
+            echo ""
+            echo "### Security coverage"
+            echo ""
+            echo "| Area | Coverage |"
+            echo "|---|---|"
+            echo "| SCA | Snyk application dependency scan |"
+            echo "| SAST | Snyk Code scan |"
+            echo "| Container vulnerability scanning | Snyk container scan against locally built PR image |"
+            echo "| SBOM | Application and container CycloneDX SBOMs generated |"
+            echo "| DAST | Not part of PR validation; requires a deployed integrated application target |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build_and_push:
+    needs: validate
+    if: ${{ github.event_name == 'push' && github.ref_name == 'cls-github-deploy' }}
+    name: Build and push image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      image_tag: ${{ steps.image_details.outputs.image_tag }}
+
+    env:
+      SERVICE_NAME: cica-apply-letter-service
+      AWS_REGION: ${{ vars.ECR_REGION }}
+      AWS_ROLE_TO_ASSUME: ${{ secrets.ECR_ROLE_TO_ASSUME }}
+      ECR_REGISTRY_URL: ${{ secrets.ECR_REGISTRY_URL }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      DOCKERFILE_PATH: Dockerfile
+      DOCKER_BUILD_CONTEXT: .
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Show build info
+        run: |
+          set -euo pipefail
+
+          echo "Building image after successful validation"
+          echo "Workflow triggered by: ${{ github.event_name }}"
+          echo "Branch/ref: ${{ github.ref_name }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "AWS region: $AWS_REGION"
+          echo "ECR repository: $ECR_REPOSITORY"
+          echo "Dockerfile path: $DOCKERFILE_PATH"
+          echo "Docker build context: $DOCKER_BUILD_CONTEXT"
+
+          if [ -z "${AWS_REGION:-}" ]; then
+            echo "❌ ECR_REGION variable is not set"
+            exit 1
+          fi
+
+          if [ -z "${AWS_ROLE_TO_ASSUME:-}" ]; then
+            echo "❌ ECR_ROLE_TO_ASSUME secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${ECR_REGISTRY_URL:-}" ]; then
+            echo "❌ ECR_REGISTRY_URL secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${ECR_REPOSITORY:-}" ]; then
+            echo "❌ ECR_REPOSITORY variable is not set"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Resolve image details
+        id: image_details
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA=$(git rev-parse HEAD)
+          REGISTRY="${ECR_REGISTRY_URL}"
+          IMAGE_TAG="$SOURCE_SHA"
+          IMAGE_URI="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
+          echo "repository=$ECR_REPOSITORY" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+          echo "$SOURCE_SHA" > source-sha.txt
+          echo "$REGISTRY" > ecr-registry.txt
+          echo "$ECR_REPOSITORY" > ecr-repository.txt
+          echo "$IMAGE_TAG" > image-tag.txt
+          echo "$IMAGE_URI" > image-uri.txt
+
+          echo "Source SHA: $SOURCE_SHA"
+          echo "Image URI: $IMAGE_URI"
+
+      - name: Login to Amazon ECR
+        run: |
+          set -euo pipefail
+
+          REGISTRY="${{ steps.image_details.outputs.registry }}"
+
+          echo "Logging into ECR registry: $REGISTRY"
+
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+      - name: Build Docker image
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${{ steps.image_details.outputs.image_uri }}"
+
+          echo "Building Docker image: $IMAGE_URI"
+
+          docker build \
+            --build-arg NODE_ENV=production \
+            -f "$DOCKERFILE_PATH" \
+            -t "$IMAGE_URI" \
+            "$DOCKER_BUILD_CONTEXT"
+
+      - name: Basic container start check
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${{ steps.image_details.outputs.image_uri }}"
+          CONTAINER_NAME="${SERVICE_NAME}-build-check"
+
+          echo "Starting container as a basic build check"
+
+          docker run -d \
+            -p 3001:3001 \
+            --name "$CONTAINER_NAME" \
+            "$IMAGE_URI"
+
+          sleep 5
+          docker ps --filter "name=$CONTAINER_NAME"
+          docker logs "$CONTAINER_NAME" || true
+          docker stop "$CONTAINER_NAME"
+          docker rm "$CONTAINER_NAME"
+
+      - name: Push Docker image
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${{ steps.image_details.outputs.image_uri }}"
+
+          echo "Pushing Docker image: $IMAGE_URI"
+          docker push "$IMAGE_URI"
+
+      - name: Capture published image digest
+        id: published_image
+        run: |
+          set -euo pipefail
+
+          IMAGE_TAG="${{ steps.image_details.outputs.image_tag }}"
+
+          IMAGE_DIGEST=$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+
+          if [ -z "$IMAGE_DIGEST" ] || [ "$IMAGE_DIGEST" = "None" ]; then
+            echo "❌ Failed to capture ECR image digest"
+            exit 1
+          fi
+
+          echo "$IMAGE_DIGEST" > image-digest.txt
+          echo "image_digest=$IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
+
+          echo "Published image digest: $IMAGE_DIGEST"
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: build-evidence
+          path: |
+            source-sha.txt
+            ecr-registry.txt
+            ecr-repository.txt
+            image-tag.txt
+            image-uri.txt
+            image-digest.txt
+          if-no-files-found: warn
+
+      - name: Write build summary
+        if: always()
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Build summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Branch | \`${{ github.ref_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| ECR repository | \`${ECR_REPOSITORY}\` |"
+            echo "| Image URI | \`${{ steps.image_details.outputs.image_uri || 'not available' }}\` |"
+            echo "| Image digest | \`${{ steps.published_image.outputs.image_digest || 'not available' }}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build_and_push
+    name: Deploy to dev
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      DEPLOY_ENV: dev
+      IMAGE_TAG: ${{ needs.build_and_push.outputs.image_tag }}
+      REGISTRY: ${{ secrets.ECR_REGISTRY_URL }}
+      REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+      KUBE_CERT: ${{ secrets.KUBE_CERT }}
+      KUBE_CLUSTER: ${{ secrets.KUBE_CLUSTER }}
+      KUBE_NAMESPACE: ${{ secrets.KUBE_NAMESPACE }}
+      KUBE_TOKEN: ${{ secrets.KUBE_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Show deployment info
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          echo "Deploying to environment: $DEPLOY_ENV"
+          echo "Kubernetes cluster: $KUBE_CLUSTER"
+          echo "Kubernetes namespace: $KUBE_NAMESPACE"
+          echo "Manifest directory: $MANIFEST_DIR"
+          echo "Image URI: $IMAGE_URI"
+
+          if [ -z "${DEPLOY_ENV:-}" ]; then
+            echo "❌ DEPLOY_ENV is not set"
+            exit 1
+          fi
+
+          if [ -z "${IMAGE_TAG:-}" ]; then
+            echo "❌ IMAGE_TAG is not set"
+            exit 1
+          fi
+
+          if [ -z "${REGISTRY:-}" ]; then
+            echo "❌ REGISTRY is not set"
+            exit 1
+          fi
+
+          if [ -z "${REPOSITORY:-}" ]; then
+            echo "❌ REPOSITORY is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_CERT:-}" ]; then
+            echo "❌ KUBE_CERT secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_CLUSTER:-}" ]; then
+            echo "❌ KUBE_CLUSTER secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_NAMESPACE:-}" ]; then
+            echo "❌ KUBE_NAMESPACE secret is not set"
+            exit 1
+          fi
+
+          if [ -z "${KUBE_TOKEN:-}" ]; then
+            echo "❌ KUBE_TOKEN secret is not set"
+            exit 1
+          fi
+
+          if [ ! -d "$MANIFEST_DIR" ]; then
+            echo "❌ Kubernetes manifest directory does not exist: $MANIFEST_DIR"
+            exit 1
+          fi
+
+          if [ ! -f "$MANIFEST_DIR/deploy-main.yaml" ]; then
+            echo "❌ Missing manifest: $MANIFEST_DIR/deploy-main.yaml"
+            exit 1
+          fi
+
+          if [ ! -f "$MANIFEST_DIR/deploy-worker.yaml" ]; then
+            echo "❌ Missing manifest: $MANIFEST_DIR/deploy-worker.yaml"
+            exit 1
+          fi
+
+          if [ ! -f "$MANIFEST_DIR/service.yaml" ]; then
+            echo "❌ Missing manifest: $MANIFEST_DIR/service.yaml"
+            exit 1
+          fi
+
+      - name: Authenticate with Kubernetes cluster
+        run: |
+          set -euo pipefail
+
+          echo "Authenticating with namespace $KUBE_NAMESPACE"
+
+          echo -n "$KUBE_CERT" | base64 -d > ca.crt
+
+          kubectl config set-cluster "$KUBE_CLUSTER" \
+            --certificate-authority=./ca.crt \
+            --server="https://${KUBE_CLUSTER}"
+
+          kubectl config set-credentials deploy-user \
+            --token="$KUBE_TOKEN"
+
+          kubectl config set-context "$KUBE_CLUSTER" \
+            --cluster="$KUBE_CLUSTER" \
+            --user=deploy-user \
+            --namespace="$KUBE_NAMESPACE"
+
+          kubectl config use-context "$KUBE_CLUSTER"
+          kubectl config current-context
+
+          echo "Checking namespace access"
+          kubectl -n "$KUBE_NAMESPACE" get pods
+
+      - name: Deploy to Kubernetes
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          APP_CONTAINER_NAME="letter-app-${DEPLOY_ENV}"
+          WORKER_CONTAINER_NAME="letter-worker-${DEPLOY_ENV}"
+
+          echo "Deploying image: $IMAGE_URI"
+          echo "Manifest directory: $MANIFEST_DIR"
+          echo "App container name: $APP_CONTAINER_NAME"
+          echo "Worker container name: $WORKER_CONTAINER_NAME"
+
+          echo "Applying app deployment"
+          kubectl set image -f "$MANIFEST_DIR/deploy-main.yaml" \
+            "$APP_CONTAINER_NAME=$IMAGE_URI" \
+            --local -o yaml | kubectl -n "$KUBE_NAMESPACE" apply -f -
+
+          echo "Applying worker deployment"
+          kubectl set image -f "$MANIFEST_DIR/deploy-worker.yaml" \
+            "$WORKER_CONTAINER_NAME=$IMAGE_URI" \
+            --local -o yaml | kubectl -n "$KUBE_NAMESPACE" apply -f -
+
+          echo "Applying service"
+          kubectl -n "$KUBE_NAMESPACE" apply -f "$MANIFEST_DIR/service.yaml"
+
+      - name: Wait for rollout
+        run: |
+          set -euo pipefail
+
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          echo "Waiting for app deployment rollout"
+          kubectl -n "$KUBE_NAMESPACE" rollout status -f "$MANIFEST_DIR/deploy-main.yaml" --timeout=300s
+
+          echo "Waiting for worker deployment rollout"
+          kubectl -n "$KUBE_NAMESPACE" rollout status -f "$MANIFEST_DIR/deploy-worker.yaml" --timeout=300s
+
+      - name: Verify deployed image
+        run: |
+          set -euo pipefail
+
+          EXPECTED_IMAGE="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+
+          echo "Expected image: $EXPECTED_IMAGE"
+          echo "Images currently referenced by deployments in $KUBE_NAMESPACE:"
+
+          kubectl -n "$KUBE_NAMESPACE" get deployment \
+            -o jsonpath='{range .items[*]}{.metadata.name}{": "}{range .spec.template.spec.containers[*]}{.name}{"="}{.image}{" "}{end}{"\n"}{end}'
+
+          MATCHING_CONTAINERS=$(kubectl -n "$KUBE_NAMESPACE" get deployment -o json | jq -r --arg image "$EXPECTED_IMAGE" '
+            [
+              .items[]
+              | .spec.template.spec.containers[]
+              | select(.image == $image)
+            ]
+            | length
+          ')
+
+          if [ "$MATCHING_CONTAINERS" -lt 2 ]; then
+            echo "❌ Expected image was not found on both app and worker deployments"
+            echo "Expected at least 2 matching containers, found: $MATCHING_CONTAINERS"
+            exit 1
+          fi
+
+          echo "✅ Expected image is referenced by app and worker deployments"
+
+      - name: Write deployment summary
+        if: always()
+        run: |
+          set -euo pipefail
+
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+          MANIFEST_DIR="./kube_deploy/${DEPLOY_ENV}"
+
+          {
+            echo "## Deployment summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Environment | \`${DEPLOY_ENV}\` |"
+            echo "| Namespace | \`${KUBE_NAMESPACE}\` |"
+            echo "| Cluster | \`${KUBE_CLUSTER}\` |"
+            echo "| Manifest directory | \`${MANIFEST_DIR}\` |"
+            echo "| Image | \`${IMAGE_URI}\` |"
+            echo "| Ref | \`${{ github.sha }}\` |"
+            echo ""
+            echo "### Applied manifests"
+            echo ""
+            echo "- \`${MANIFEST_DIR}/deploy-main.yaml\`"
+            echo "- \`${MANIFEST_DIR}/deploy-worker.yaml\`"
+            echo "- \`${MANIFEST_DIR}/service.yaml\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"

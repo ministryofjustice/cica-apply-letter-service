@@ -1,0 +1,28 @@
+service:
+  name: cica-letter-service
+  type: node-service
+
+runtime:
+  node: "24"
+  packageManager: npm
+
+build:
+  dockerfile: ./Dockerfile
+  context: .
+  imageName: cica-letter-service
+
+quality:
+  lintCommand: npm run lint:fix
+  testCommand: npm test
+
+security:
+  snykEnabled: true
+  sbomEnabled: true
+  attestationsEnabled: true
+
+deployment:
+  platform: kubernetes
+  gitopsEnabled: true
+  environments:
+    - dev
+    - uat

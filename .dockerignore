@@ -10,15 +10,12 @@
 # Works with directories in Npm
 # e.g. !my_directory/**/*
 
-# package.json and package-lock.json
-
+# Runtime application files
 !main/
-!main/middleware/
-!main/routes/
-!main/app.js
-!main/server.js
+!main/**/*
 !worker/
-!worker/handlers/
-!worker/index.js
+!worker/**/*
+
+# Dependency manifests
 !package.json
 !package-lock.json
