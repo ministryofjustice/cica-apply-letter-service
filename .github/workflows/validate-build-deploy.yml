@@ -685,9 +685,6 @@ jobs:
 
     outputs:
       image_tag: ${{ steps.image_details.outputs.image_tag }}
-      image_uri: ${{ steps.image_details.outputs.image_uri }}
-      registry: ${{ steps.image_details.outputs.registry }}
-      repository: ${{ steps.image_details.outputs.repository }}
 
     env:
       SERVICE_NAME: cica-apply-letter-service
@@ -887,8 +884,8 @@ jobs:
     env:
       DEPLOY_ENV: dev
       IMAGE_TAG: ${{ needs.build_and_push.outputs.image_tag }}
-      REGISTRY: ${{ needs.build_and_push.outputs.registry }}
-      REPOSITORY: ${{ needs.build_and_push.outputs.repository }}
+      REGISTRY: ${{ secrets.ECR_REGISTRY_URL }}
+      REPOSITORY: ${{ vars.ECR_REPOSITORY }}
 
       KUBE_CERT: ${{ secrets.KUBE_CERT }}
       KUBE_CLUSTER: ${{ secrets.KUBE_CLUSTER }}
