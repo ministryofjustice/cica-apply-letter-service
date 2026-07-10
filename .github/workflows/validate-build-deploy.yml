@@ -675,7 +675,7 @@ jobs:
 
   build_and_push:
     needs: validate
-    if: ${{ github.event_name == 'push' && github.ref_name == 'cls-deploy' }}
+    if: ${{ github.event_name == 'push' && github.ref_name == 'cls-github-deploy' }}
     name: Build and push image
     runs-on: ubuntu-latest
 
